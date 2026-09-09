@@ -5,17 +5,15 @@
 
 # Print banner
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "  Nabu CN System & Family Link Helper"
-ui_print "  v1.0.30 by Ian Perdiansah"
+ui_print "  Nabu Global Auto-Switch & Display"
+ui_print "  by Ian Perdiansah"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print ""
 ui_print "  Features included:"
-ui_print "  1. GSF/GMS Bypass for MIUI CN ROM"
-ui_print "  2. Family Link & Supervision System Apps"
-ui_print "  3. Multi-pane Deep Link & AppOps Protection"
-ui_print "  4. Auto-kill background users on switch"
-ui_print "  5. Refresh-rate lock (60Hz)"
-ui_print "  6. Auto-switch to User 0 when screen off"
+ui_print "  1. Auto-kill background users on switch"
+ui_print "  2. Auto-switch to User 0 when screen off"
+ui_print "  3. Display refresh-rate lock (60Hz)"
+ui_print "  4. Play Integrity spoofing"
 ui_print ""
 
 # Set proper permissions for scripts

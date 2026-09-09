@@ -1,6 +1,6 @@
 #!/system/bin/sh
-# Nabu CN System & Family Link Helper — Auto Switch Daemon
-# =========================================================
+# Nabu Global Auto-Switch & Display Helper — Auto Switch Daemon
+# =============================================================
 # Background daemon that monitors screen state and foreground user
 # changes. It aggressively re-applies a 60Hz refresh-rate lock for
 # all users/current foreground user, and when the screen is off on a
@@ -35,11 +35,6 @@ POLL_INTERVAL=10
 # Re-apply the refresh lock periodically while the daemon is alive.
 # This helps when MIUI/HyperOS rewrites refresh-rate state after user switch.
 REFRESH_REAPPLY_INTERVAL=60
-
-# Re-apply Family Link permissions periodically (in seconds)
-# Helps restore permissions if Play Store silently updates the apps in the background.
-# Default: 1800s (30 minutes)
-PERM_REAPPLY_INTERVAL=1800
 # ───────────────────────────────────────────────────────────────────
 
 log() {
@@ -119,164 +114,15 @@ apply_refresh_all_users() {
   done
 }
 
-enforce_familylink_permissions() {
-  USERS=$(pm list users 2>/dev/null | grep 'UserInfo{' | sed -n 's/.*UserInfo{\([0-9]*\):.*/\1/p')
-  [ -z "$USERS" ] && USERS="0 11"
-
-  # Whitelist services from Doze / Battery Optimization
-  dumpsys deviceidle whitelist +com.google.android.gms.supervision >/dev/null 2>&1
-  dumpsys deviceidle whitelist +com.google.android.apps.kids.familylinkhelper >/dev/null 2>&1
-  dumpsys deviceidle whitelist +com.google.android.gms >/dev/null 2>&1
-  dumpsys deviceidle whitelist +com.android.vending >/dev/null 2>&1
-  dumpsys deviceidle whitelist +com.android.providers.downloads >/dev/null 2>&1
-  dumpsys deviceidle whitelist +com.miui.packageinstaller >/dev/null 2>&1
-  # Ensure DroidGuard and GSF checkin services are enabled
-  pm enable com.google.android.gms/.droidguard.DroidGuardGmsService >/dev/null 2>&1
-  pm enable com.google.android.gms/com.google.android.gms.droidguard.DroidGuardService >/dev/null 2>&1
-  pm enable com.google.android.gms/com.google.android.gms.checkin.CheckinService >/dev/null 2>&1
-  pm enable com.google.android.gsf >/dev/null 2>&1
-
-  # Bypass Xiaomi installer captcha & account prompt settings
-  settings put global miui_install_verify 0 >/dev/null 2>&1
-  settings put secure miui_install_verify 0 >/dev/null 2>&1
-  settings put system miui_install_verify 0 >/dev/null 2>&1
-  settings put secure install_confirm_status 0 >/dev/null 2>&1
-  settings put global install_verify_device_id 0 >/dev/null 2>&1
-  settings put global install_silent 1 >/dev/null 2>&1
-  settings put secure install_silent 1 >/dev/null 2>&1
-  settings put global verify_market_app 0 >/dev/null 2>&1
-  settings put global package_verifier_enable 0 >/dev/null 2>&1
-  settings put global package_verifier_include_adb 0 >/dev/null 2>&1
-  settings put global upload_apk_enable 0 >/dev/null 2>&1
-  settings put secure upload_apk_enable 0 >/dev/null 2>&1
-  settings put global require_verify_for_package 0 >/dev/null 2>&1
-  settings put global package_verifier_user_consent -1 >/dev/null 2>&1
-  setprop persist.sys.upload_apk_enable 0 >/dev/null 2>&1
-  setprop persist.sys.package_verifier_enable 0 >/dev/null 2>&1
-  setprop persist.sys.require_verify_for_package 0 >/dev/null 2>&1
-
-  # Enable Google Advertising ID & disable Xiaomi ad tracking limits
-  settings put global limit_ad_tracking 0 >/dev/null 2>&1
-  settings put secure limit_ad_tracking 0 >/dev/null 2>&1
-  settings put global google_advertising_id_disabled 0 >/dev/null 2>&1
-  settings put secure google_advertising_id_disabled 0 >/dev/null 2>&1
-
-  for u in $USERS; do
-    settings put --user "$u" global limit_ad_tracking 0 >/dev/null 2>&1
-    settings put --user "$u" secure limit_ad_tracking 0 >/dev/null 2>&1
-    settings put --user "$u" global google_advertising_id_disabled 0 >/dev/null 2>&1
-    settings put --user "$u" secure google_advertising_id_disabled 0 >/dev/null 2>&1
-  done
-
-  # Generate persistent ad_id.xml for User 0 and User 11 if missing
-  if [ -d "/data/data/com.google.android.gms" ]; then
-    mkdir -p "/data/data/com.google.android.gms/shared_prefs" >/dev/null 2>&1
-    if [ ! -f "/data/data/com.google.android.gms/shared_prefs/ad_id.xml" ]; then
-      cat << 'EOF' > "/data/data/com.google.android.gms/shared_prefs/ad_id.xml"
-<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
-<map>
-    <string name="adid_key">e4d5f6a7-8b9c-4d1e-9f3a-4b5c6d7e8f9a</string>
-    <boolean name="enable_limit_ad_tracking" value="false" />
-    <boolean name="zero_advertising_id" value="false" />
-    <boolean name="adid_settings_migrated" value="true" />
-</map>
-EOF
-      uid_0=$(stat -c '%u:%g' /data/data/com.google.android.gms 2>/dev/null || echo "10028:10028")
-      chmod 660 "/data/data/com.google.android.gms/shared_prefs/ad_id.xml" >/dev/null 2>&1
-      chown $uid_0 "/data/data/com.google.android.gms/shared_prefs/ad_id.xml" >/dev/null 2>&1
-    fi
-  fi
-
-  if [ -d "/data/user/11/com.google.android.gms" ]; then
-    mkdir -p "/data/user/11/com.google.android.gms/shared_prefs" >/dev/null 2>&1
-    if [ ! -f "/data/user/11/com.google.android.gms/shared_prefs/ad_id.xml" ]; then
-      cat << 'EOF' > "/data/user/11/com.google.android.gms/shared_prefs/ad_id.xml"
-<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
-<map>
-    <string name="adid_key">e4d5f6a7-8b9c-4d1e-9f3a-4b5c6d7e8f9a</string>
-    <boolean name="enable_limit_ad_tracking" value="false" />
-    <boolean name="zero_advertising_id" value="false" />
-    <boolean name="adid_settings_migrated" value="true" />
-</map>
-EOF
-      uid_11=$(stat -c '%u:%g' /data/user/11/com.google.android.gms 2>/dev/null || echo "1110028:1110028")
-      chmod 660 "/data/user/11/com.google.android.gms/shared_prefs/ad_id.xml" >/dev/null 2>&1
-      chown $uid_11 "/data/user/11/com.google.android.gms/shared_prefs/ad_id.xml" >/dev/null 2>&1
-    fi
-  fi
-
-  INSTALLER_PKGS="com.google.android.apps.kids.familylink com.google.android.apps.kids.familylinkhelper com.google.android.gms.supervision com.google.android.gms com.android.vending com.android.providers.downloads com.android.providers.downloads.ui com.miui.packageinstaller com.google.android.packageinstaller com.android.packageinstaller"
-
-  for u in $USERS; do
-    for pkg in $INSTALLER_PKGS; do
-      if pm list packages --user "$u" 2>/dev/null | grep -q "$pkg"; then
-        for perm in \
-          android.permission.INSTALL_PACKAGES \
-          android.permission.DELETE_PACKAGES \
-          android.permission.REQUEST_INSTALL_PACKAGES \
-          android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION \
-          android.permission.MANAGE_EXTERNAL_STORAGE \
-          android.permission.PACKAGE_USAGE_STATS \
-          android.permission.OBSERVE_APP_USAGE \
-          android.permission.CHANGE_APP_IDLE_STATE; do
-            pm grant --user "$u" "$pkg" "$perm" >/dev/null 2>&1
-        done
-
-        safe_appops_set() {
-          u="$1"; pkg="$2"; op="$3"; mode="$4"
-          curr=$(appops get --user "$u" "$pkg" "$op" 2>/dev/null)
-          if ! echo "$curr" | grep -i -q "$mode"; then
-            appops set --user "$u" "$pkg" "$op" "$mode" >/dev/null 2>&1
-          fi
-        }
-
-        safe_appops_set "$u" "$pkg" SYSTEM_ALERT_WINDOW allow
-        safe_appops_set "$u" "$pkg" GET_USAGE_STATS allow
-        safe_appops_set "$u" "$pkg" WRITE_SETTINGS allow
-        safe_appops_set "$u" "$pkg" USE_FULL_SCREEN_INTENT allow
-        safe_appops_set "$u" "$pkg" SCHEDULE_EXACT_ALARM allow
-        safe_appops_set "$u" "$pkg" 133 allow
-        safe_appops_set "$u" "$pkg" RUN_IN_BACKGROUND allow
-        safe_appops_set "$u" "$pkg" RUN_ANY_IN_BACKGROUND allow
-        safe_appops_set "$u" "$pkg" START_FOREGROUND allow
-        safe_appops_set "$u" "$pkg" FINE_LOCATION allow
-        safe_appops_set "$u" "$pkg" COARSE_LOCATION allow
-        safe_appops_set "$u" "$pkg" BLUETOOTH_ADVERTISE allow
-        safe_appops_set "$u" "$pkg" BLUETOOTH_CONNECT allow
-        safe_appops_set "$u" "$pkg" BLUETOOTH_SCAN allow
-        safe_appops_set "$u" "$pkg" NEARBY_WIFI_DEVICES allow
-        safe_appops_set "$u" "$pkg" USE_FULL_SCREEN_INTENT allow
-        safe_appops_set "$u" "$pkg" ACCESS_RESTRICTED_SETTINGS allow
-        safe_appops_set "$u" "$pkg" REQUEST_INSTALL_PACKAGES allow
-        safe_appops_set "$u" "$pkg" MANAGE_EXTERNAL_STORAGE allow
-        safe_appops_set "$u" "$pkg" WRITE_MEDIA_AUDIO allow
-        safe_appops_set "$u" "$pkg" WRITE_MEDIA_VIDEO allow
-        safe_appops_set "$u" "$pkg" WRITE_MEDIA_IMAGES allow
-        safe_appops_set "$u" "$pkg" 66 allow
-        safe_appops_set "$u" "$pkg" 92 allow
-        safe_appops_set "$u" "$pkg" 98 allow
-        safe_appops_set "$u" "$pkg" 99 allow
-        safe_appops_set "$u" "$pkg" 100 allow
-        safe_appops_set "$u" "$pkg" 10008 allow
-        safe_appops_set "$u" "$pkg" 10021 allow
-        safe_appops_set "$u" "$pkg" 10022 allow
-        safe_appops_set "$u" "$pkg" 10033 allow
-      fi
-    done
-  done
-}
-
 log "Auto-switch daemon started (refresh=${REFRESH_RATE}Hz, timeout=${TIMEOUT}s, poll=${POLL_INTERVAL}s, reapply=${REFRESH_REAPPLY_INTERVAL}s)"
 
 # Initial pass: lock every user once after boot/module start.
 apply_refresh_all_users
-enforce_familylink_permissions
 
 # Track when the screen turned off while on a secondary user
 SCREEN_OFF_TIMESTAMP=0
 LAST_USER=""
 LAST_REFRESH_APPLY=$(date +%s)
-LAST_PERM_APPLY=$(date +%s)
 
 while true; do
   SCREEN_STATE=$(get_screen_state)
@@ -290,23 +136,16 @@ while true; do
   fi
 
   if [ "$CURRENT_USER" != "$LAST_USER" ]; then
-    log "Foreground user changed to $CURRENT_USER — enforcing ${REFRESH_RATE}Hz and Family Link permissions"
+    log "Foreground user changed to $CURRENT_USER — enforcing ${REFRESH_RATE}Hz lock"
     apply_refresh_lock "$CURRENT_USER"
-    enforce_familylink_permissions
     LAST_USER="$CURRENT_USER"
     LAST_REFRESH_APPLY="$NOW"
-    LAST_PERM_APPLY="$NOW"
     SCREEN_OFF_TIMESTAMP=0
   else
     if [ $((NOW - LAST_REFRESH_APPLY)) -ge "$REFRESH_REAPPLY_INTERVAL" ]; then
       log "Periodic refresh rate re-apply for user $CURRENT_USER"
       apply_refresh_lock "$CURRENT_USER"
       LAST_REFRESH_APPLY="$NOW"
-    fi
-    if [ $((NOW - LAST_PERM_APPLY)) -ge "$PERM_REAPPLY_INTERVAL" ]; then
-      log "Periodic permissions re-apply for user $CURRENT_USER (handling silent app updates)"
-      enforce_familylink_permissions &
-      LAST_PERM_APPLY="$NOW"
     fi
   fi
 

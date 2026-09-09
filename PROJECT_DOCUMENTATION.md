@@ -94,24 +94,24 @@ Berikut ringkasan kronologis perbaikan dari awal hingga versi terbaru:
 - **Fix Pemantauan Layar & Penggunaan Anak**: Mengidentifikasi bahwa MIUI secara agresif mencabut `OBSERVE_APP_USAGE` dan `PACKAGE_USAGE_STATS`. Menambahkan izin krusial ini ke dalam *loop* eksekusi `pm grant` di `service.sh` dan `auto_switch.sh` sehingga penggunaan aplikasi dapat tercatat akurat dan fitur *auto-lock* kembali bekerja 100%.
 - **Perbaikan AppOps**: Mengoreksi mapping `PACKAGE_USAGE_STATS` menjadi `GET_USAGE_STATS` dan menerapkan eksekusi yang lebih aman (`safe_appops_set`) untuk iterasi hak akses.
 
-### 🔹 v1.0.42 (Silent Background App Update Perms Restorer)
-- **Periodic Permission Enforcer**: Menyadari bahwa *Play Store* bisa melakukan *silent update* pada aplikasi Family Link kapan saja di latar belakang (yang mana menghapus seluruh hak akses sistem `OBSERVE_APP_USAGE`). Kini *daemon* `auto_switch.sh` dimodifikasi agar **mengeksekusi ulang perizinan setiap 30 menit (1800 detik)** di balik layar, terlepas dari apakah ada pergantian akun/layar atau tidak.
-- **Resilient Tracking**: Anak kini bisa menggunakan tabletnya berhari-hari tanpa ganti profil dan meskipun *app* melakukan pembaruan versi, proteksi *screen time* & *auto-lock* tidak akan mati lagi.
+### 🔹 v2.0.0 (Lite Global Edition - Tanpa Family Link & GMS Hack)
+- **Migrasi ke ROM Global**: Karena perangkat telah beralih ke ROM Global (di mana GMS dan Family Link sudah terintegrasi dan berjalan normal bawaan sistem tanpa batasan ROM China), seluruh bundle aplikasi priv-app (`FamilyLink`, `FamilyLinkHelper`, `Supervision`, `Phonesky`, `GooglePackageInstaller`), XML permissions, AppOps looping, dan bypass installer MIUI dipangkas tuntas.
+- **Fokus Fitur Inti**:
+  1. **Multi-User Management**: `am set-stop-user-on-switch true` & background daemon `auto_switch.sh` (auto-switch ke User 0 saat screen off) untuk mematikan secondary user secara otomatis.
+  2. **Display Refresh Rate Lock**: Pengunci 60Hz stabil di semua user.
+  3. **Play Integrity Spoofing**: `verifiedbootstate=green`, `flash.locked=1`, `veritymode=enforcing`, dll. via `system.prop` & `resetprop`.
 
 ---
 
-## 🔑 4. STATUS FITUR SAAT INI (VERIFIKASI TERAKHIR)
+## 🔑 4. STATUS FITUR SAAT INI (VERIFIKASI TERAKHIR - v2.0.0)
 
 | Fitur | Status | Catatan Teknis |
 | :--- | :---: | :--- |
-| **Stop User On Switch** | ✅ AKTIF | `am set-stop-user-on-switch true` berjalan otomatis di booting. User 11 langsung mati saat pindah ke User 0. |
-| **Auto Switch Screen Off** | ✅ AKTIF | Pindah otomatis ke User 0 saat layar dimatikan (*screen off*). |
-| **Google Advertising ID (AAID)** | ✅ AKTIF | Berjalan normal (menampilkan ID Iklan aktif, tidak lagi `00000...`). |
-| **GMS Core & Play Store** | ✅ AKTIF | Berjalan di versi stabil (`v253434035`). Opsi login Google & Play Store normal tanpa `IOException`. |
-| **Family Link & Supervision** | ✅ AKTIF | Izin `OBSERVE_APP_USAGE`, `PACKAGE_USAGE_STATS`, `SYSTEM_ALERT_WINDOW`, `USE_FULL_SCREEN_INTENT`, `SCHEDULE_EXACT_ALARM` aktif. Fitur *screen time* & *auto-lock* berjalan normal. |
-| **Bahasa Space Anak (User 11)** | ✅ AKTIF | Konfigurasi sistem User 11 diatur ke Bahasa Indonesia (`id-ID`). |
-| **Refresh Rate Lock** | ✅ AKTIF | Terkunci di 60Hz. |
-| **Play Integrity** | ✅ AKTIF | Properti `green` & `locked` disuntikkan via `resetprop` di `service.sh` untuk mengejar `MEETS_DEVICE_INTEGRITY`. |
+| **Stop User On Switch** | ✅ AKTIF | `am set-stop-user-on-switch true` berjalan otomatis di booting. Secondary user langsung mati saat beralih. |
+| **Auto Switch Screen Off** | ✅ AKTIF | Pindah otomatis ke User 0 saat layar dimatikan (*screen off*, timeout 10 menit). |
+| **Refresh Rate Lock** | ✅ AKTIF | Layar terkunci secara persisten di 60Hz untuk semua user. |
+| **Play Integrity** | ✅ AKTIF | Properti `green` & `locked` disuntikkan via `system.prop` & `resetprop` di `service.sh`. |
+| **Family Link & GMS** | ⚡ NATIVE | Ditangani langsung secara native & resmi oleh ROM Global tanpa modifikasi modul. |
 
 ---
 
@@ -119,23 +119,22 @@ Berikut ringkasan kronologis perbaikan dari awal hingga versi terbaru:
 
 Jika Anda memulai perbincangan di **Chat Baru (New Conversation)**, berikan petunjuk singkat berikut ke AI:
 
-> *"Saya ingin melanjutkan pengembangan modul Magisk `nabu-cn-familylink-helper` (terakhir v1.0.41) di `C:\Users\ianpe\kill-users-nabu`. Silakan baca file dokumentasi proyek di `README.md` / `PROJECT_DOCUMENTATION.md` untuk memahami seluruh arsitektur dan status terakhir."*
+> *"Saya ingin melanjutkan pengembangan modul Magisk `nabu-global-helper` (v2.0.0 branch `lite-global`) di `kill-users-nabu`. Modul ini berfokus pada auto-switch multi-user, 60Hz lock, dan Play Integrity spoofing untuk Xiaomi Pad 5 (nabu) ROM Global."*
 
 ### Perintah Penting untuk Build & Flash:
 1. **Build Modul Baru**:
-   ```powershell
-   cd C:\Users\ianpe\kill-users-nabu
-   python build.py
+   ```bash
+   python3 build.py
    ```
 2. **Flash Modul ke Tablet via ADB**:
-   ```powershell
-   adb push nabu-cn-familylink-helper-v1.0.30.zip /data/local/tmp/
-   adb shell "su -c 'magisk --install-module /data/local/tmp/nabu-cn-familylink-helper-v1.0.30.zip'"
+   ```bash
+   adb push nabu-global-helper-v2.0.0.zip /data/local/tmp/
+   adb shell "su -c 'magisk --install-module /data/local/tmp/nabu-global-helper-v2.0.0.zip'"
    ```
 3. **Push ke GitHub**:
-   ```powershell
+   ```bash
    git add .
    git commit -m "Pesan commit"
    git pull --rebase
-   git push origin main
+   git push origin lite-global
    ```

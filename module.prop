@@ -1,6 +1,6 @@
-id=nabu-cn-familylink-helper
-name=Nabu CN System & Family Link Helper
-version=v1.0.42
-versionCode=43
+id=nabu-global-helper
+name=Nabu Global Auto-Switch & Display Helper
+version=v2.0.0
+versionCode=200
 author=Ian Perdiansah
-description=Stop background users, enable GMS/GSF on CN ROM, configure Family Link, Supervision & Play Store as system privileged apps, enforce overlay & autostart AppOps, bypass MIUI installer blocks, and lock refresh-rate.
+description=Auto-kill secondary users on switch, auto-switch to User 0 on screen off, lock display refresh rate at 60Hz, and spoof Play Integrity properties for Xiaomi Pad 5 (nabu) on Global ROM.

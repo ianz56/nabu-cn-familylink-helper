@@ -6,7 +6,7 @@
 # then stops all users except the primary user (user 0).
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Nabu CN System & Family Link Helper"
+echo "  Nabu Global Auto-Switch & Display"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 

@@ -1,31 +1,23 @@
-# Nabu CN System & Family Link Helper
+# Nabu Global Auto-Switch & Display Helper
 
-Magisk module for Xiaomi Pad 5 (nabu) running MIUI / HyperOS China ROMs. This module resolves Google Family Link onboarding and downtime overlay crashes, enables GSF/GMS compatibility, manages background secondary users, and locks refresh-rate settings.
+Magisk module for Xiaomi Pad 5 (nabu) running MIUI / HyperOS Global ROMs. This lightweight module automatically kills background secondary users on switch, auto-switches back to User 0 on screen off, enforces a 60Hz display refresh-rate lock, and provides Play Integrity spoofing.
 
 ## Features
 
-1. **Family Link & GMS Supervision System Integration**:
-   - Packages `com.google.android.apps.kids.familylink`, `com.google.android.apps.kids.familylinkhelper`, and `com.google.android.gms.supervision` as system-privileged apps (`/system/product/priv-app/`).
-   - Resolves multi-pane settings deep link crashes (`LAUNCH_MULTI_PANE_SETTINGS_DEEP_LINK`).
-   - Fixes Family Link Helper force close (FC) and unblocks Google account onboarding ("Getting next steps...") in Second Space (User 11).
-
-2. **System Default-Permissions & AppOps Enforcement Daemon**:
-   - Provides `/system/product/etc/default-permissions/default-permissions-familylink.xml` with `fixed="true"` to lock all runtime permissions for Family Link apps across all users.
-   - Includes a background daemon that periodically enforces `SYSTEM_ALERT_WINDOW` (display over other apps), `GET_USAGE_STATS`, `USE_FULL_SCREEN_INTENT`, and MIUI Autostart (`10008`) to ensure Downtime lock overlays work reliably.
-
-3. **MIUI CN GSF / GMS Bypass**:
-   - Creates a dummy `/system/product/priv-app/GmsCore` path to bypass MIUI China ROM's GSF package hiding logic.
-
-4. **Multi-User Background Management**:
+1. **Multi-User Background Management**:
    - Automatically executes `am set-stop-user-on-switch true` so background secondary users are killed upon user switch.
-   - Auto-switches back to User 0 if a secondary user remains inactive while the screen is off.
+   - Background daemon (`auto_switch.sh`) monitors screen state and automatically switches back to User 0 if a secondary user remains inactive while the screen is off (default timeout: 10 minutes).
 
-5. **Refresh Rate Management**:
-   - Enforces a 60Hz display refresh lock across all users.
+2. **Display Refresh Rate Lock**:
+   - Permanently locks the screen refresh rate to 60Hz across all user spaces (User 0 and secondary users).
+   - Periodically re-applies the display rate to prevent MIUI/HyperOS reset glitches.
+
+3. **Play Integrity Spoofing**:
+   - Injects verified bootloader and locked properties (`ro.boot.verifiedbootstate=green`, `ro.boot.flash.locked=1`, etc.) via `system.prop` and `resetprop` in `service.sh` to help achieve `MEETS_DEVICE_INTEGRITY`.
 
 ## Installation
 
-1. Build or download `nabu-cn-familylink-helper-v1.0.8.zip`.
+1. Build or download `nabu-global-helper-v2.0.0.zip`.
 2. Flash the ZIP file via Magisk Manager or KernelSU.
 3. Reboot your device.
 

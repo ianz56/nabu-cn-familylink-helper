@@ -1,8 +1,8 @@
 # Build script for Nabu CN System & Family Link Helper Magisk Module
 # Run this in PowerShell from the project directory
 
-$ModuleName = "nabu-cn-familylink-helper"
-$Version = "v1.0.9"
+$ModuleName = "nabu-global-helper"
+$Version = "v2.0.0"
 $ZipName = "$ModuleName-$Version.zip"
 $ZipPath = Join-Path $PWD $ZipName
 
