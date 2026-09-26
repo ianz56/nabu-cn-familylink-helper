@@ -30,11 +30,11 @@ DISPLAY_HEIGHT=2560
 TIMEOUT=600
 
 # How often to check screen state / active user (in seconds)
-POLL_INTERVAL=10
+POLL_INTERVAL=5
 
 # Re-apply the refresh lock periodically while the daemon is alive.
 # This helps when MIUI/HyperOS rewrites refresh-rate state after user switch.
-REFRESH_REAPPLY_INTERVAL=60
+REFRESH_REAPPLY_INTERVAL=30
 # ───────────────────────────────────────────────────────────────────
 
 log() {
@@ -61,6 +61,8 @@ poke_display_mode() {
   if cmd display set-user-preferred-display-mode "$DISPLAY_WIDTH" "$DISPLAY_HEIGHT" "$REFRESH_RATE" >/dev/null 2>&1; then
     log "Display mode preference poked (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${REFRESH_RATE})"
   fi
+  # Directly force SurfaceFlinger Hardware Display Mode to Mode 1 (60Hz)
+  service call SurfaceFlinger 1035 i32 1 >/dev/null 2>&1
 }
 
 apply_global_refresh_lock() {

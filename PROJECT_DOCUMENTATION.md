@@ -101,15 +101,19 @@ Berikut ringkasan kronologis perbaikan dari awal hingga versi terbaru:
   2. **Display Refresh Rate Lock**: Pengunci 60Hz stabil di semua user.
   3. **Play Integrity Spoofing**: `verifiedbootstate=green`, `flash.locked=1`, `veritymode=enforcing`, dll. via `system.prop` & `resetprop`.
 
+### 🔹 v2.0.1 (Fix SurfaceFlinger Hardware 60Hz Mode Lock on User Switch)
+- **Fix Stuck 120Hz Hardware Panel**: Mengidentifikasi bahwa pergantian multi-user di HyperOS/MIUI me-reset display mode ke default hardware Mode 0 (120Hz) di SurfaceFlinger meskipun di pengaturan Android tertulis 60Hz.
+- **SurfaceFlinger Binder Mode Override**: Menambahkan perintah langsung `service call SurfaceFlinger 1035 i32 1` di `service.sh`, `auto_switch.sh`, dan `action.sh` untuk memaksa SurfaceFlinger hardware display mode beralih ke Mode 1 (1600x2560 @ 60.00 Hz) secara instan dan persisten saat user berpindah.
+
 ---
 
-## 🔑 4. STATUS FITUR SAAT INI (VERIFIKASI TERAKHIR - v2.0.0)
+## 🔑 4. STATUS FITUR SAAT INI (VERIFIKASI TERAKHIR - v2.0.1)
 
 | Fitur | Status | Catatan Teknis |
 | :--- | :---: | :--- |
 | **Stop User On Switch** | ✅ AKTIF | `am set-stop-user-on-switch true` berjalan otomatis di booting. Secondary user langsung mati saat beralih. |
 | **Auto Switch Screen Off** | ✅ AKTIF | Pindah otomatis ke User 0 saat layar dimatikan (*screen off*, timeout 10 menit). |
-| **Refresh Rate Lock** | ✅ AKTIF | Layar terkunci secara persisten di 60Hz untuk semua user. |
+| **Refresh Rate Lock** | ✅ AKTIF | Layar terkunci secara hardware & sistemik di 60Hz (SurfaceFlinger Mode 1). Kebal terhadap user switch. |
 | **Play Integrity** | ✅ AKTIF | Properti `green` & `locked` disuntikkan via `system.prop` & `resetprop` di `service.sh`. |
 | **Family Link & GMS** | ⚡ NATIVE | Ditangani langsung secara native & resmi oleh ROM Global tanpa modifikasi modul. |
 
@@ -119,7 +123,7 @@ Berikut ringkasan kronologis perbaikan dari awal hingga versi terbaru:
 
 Jika Anda memulai perbincangan di **Chat Baru (New Conversation)**, berikan petunjuk singkat berikut ke AI:
 
-> *"Saya ingin melanjutkan pengembangan modul Magisk `nabu-global-helper` (v2.0.0 branch `lite-global`) di `kill-users-nabu`. Modul ini berfokus pada auto-switch multi-user, 60Hz lock, dan Play Integrity spoofing untuk Xiaomi Pad 5 (nabu) ROM Global."*
+> *"Saya ingin melanjutkan pengembangan modul Magisk `nabu-global-helper` (v2.0.1 branch `lite-global`) di `kill-users-nabu`. Modul ini berfokus pada auto-switch multi-user, 60Hz lock, dan Play Integrity spoofing untuk Xiaomi Pad 5 (nabu) ROM Global."*
 
 ### Perintah Penting untuk Build & Flash:
 1. **Build Modul Baru**:
@@ -128,8 +132,8 @@ Jika Anda memulai perbincangan di **Chat Baru (New Conversation)**, berikan petu
    ```
 2. **Flash Modul ke Tablet via ADB**:
    ```bash
-   adb push nabu-global-helper-v2.0.0.zip /data/local/tmp/
-   adb shell "su -c 'magisk --install-module /data/local/tmp/nabu-global-helper-v2.0.0.zip'"
+   adb push nabu-global-helper-v2.0.1.zip /data/local/tmp/
+   adb shell "su -c 'magisk --install-module /data/local/tmp/nabu-global-helper-v2.0.1.zip'"
    ```
 3. **Push ke GitHub**:
    ```bash

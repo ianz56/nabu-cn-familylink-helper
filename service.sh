@@ -57,6 +57,8 @@ poke_display_mode() {
   if cmd display set-user-preferred-display-mode "$DISPLAY_WIDTH" "$DISPLAY_HEIGHT" "$REFRESH_RATE" >/dev/null 2>&1; then
     log "Display mode preference poked (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${REFRESH_RATE})"
   fi
+  # SurfaceFlinger setDesiredDisplayModeSpecs / setDisplayMode override (Mode 1 = 60Hz on Xiaomi Pad 5)
+  service call SurfaceFlinger 1035 i32 1 >/dev/null 2>&1
 }
 
 apply_global_refresh_lock() {
