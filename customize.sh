@@ -21,9 +21,6 @@ set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/action.sh" 0 0 0755
 set_perm "$MODPATH/auto_switch.sh" 0 0 0755
 
-# Clean obsolete files, dalvik caches, and package_cache for smooth system scan
-rm -rf /data/system/package_cache/* /data/dalvik-cache/*/*supervision* /data/dalvik-cache/*/*familylink* /data/adb/modules/nabu-global-helper/system/product/priv-app/Supervision
-
 ui_print "  ✓ Installation complete!"
 ui_print "  ✓ Reboot to activate."
 ui_print ""
