@@ -1,8 +1,0 @@
-# Play Integrity Spoofing (MEETS_DEVICE_INTEGRITY / MEETS_BASIC_INTEGRITY)
-ro.boot.verifiedbootstate=green
-ro.boot.flash.locked=1
-ro.boot.veritymode=enforcing
-ro.boot.vbmeta.device_state=locked
-ro.boot.warranty_bit=0
-ro.warranty_bit=0
-ro.is_ever_orange=0

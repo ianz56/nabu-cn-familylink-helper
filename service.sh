@@ -39,14 +39,6 @@ log "Boot completed after ~${WAITED}s — applying setting..."
 RESULT=$(am set-stop-user-on-switch true 2>&1)
 log "am set-stop-user-on-switch true → $RESULT"
 
-# --- Apply Play Integrity Spoofing for MEETS_DEVICE_INTEGRITY ---
-resetprop -n ro.boot.verifiedbootstate green >/dev/null 2>&1
-resetprop -n ro.boot.flash.locked 1 >/dev/null 2>&1
-resetprop -n ro.boot.veritymode enforcing >/dev/null 2>&1
-resetprop -n ro.boot.vbmeta.device_state locked >/dev/null 2>&1
-resetprop -n ro.boot.warranty_bit 0 >/dev/null 2>&1
-resetprop -n ro.warranty_bit 0 >/dev/null 2>&1
-resetprop -n ro.is_ever_orange 0 >/dev/null 2>&1
 
 # --- Refresh Rate Enforcement (60Hz) helper on boot ---
 REFRESH_RATE=60

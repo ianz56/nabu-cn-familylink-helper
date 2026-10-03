@@ -10,7 +10,7 @@ import sys
 import zipfile
 
 MODULE_NAME = "nabu-global-helper"
-VERSION = "v2.0.3"
+VERSION = "v2.0.4"
 
 # Extensions that need CRLF -> LF conversion for Android
 SHELL_EXTENSIONS = {".sh"}
@@ -22,7 +22,6 @@ ROOT_FILES = [
     "action.sh",
     "auto_switch.sh",
     "customize.sh",
-    "system.prop",
     os.path.join("META-INF", "com", "google", "android", "update-binary"),
     os.path.join("META-INF", "com", "google", "android", "updater-script"),
 ]
