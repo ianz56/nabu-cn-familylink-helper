@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Date : Mon Mar 10 20:21:46 WIB 2025
+  ~ 
+  ~ Copyright (C) 2020 - 2024 The Litegapps Project
+  ~
+-->
+<!--
+This XML file declares which signature|privileged permissions should be granted to privileged
+applications on GMS or Google-branded devices.
+It allows additional grants on top of privapp-permissions-platform.xml
+-->
+<permissions>
+  <privapp-permissions package="com.google.android.packageinstaller">
+    <permission name="android.permission.MANAGE_USERS"/>
+    <permission name="android.permission.INSTALL_PACKAGES"/>
+    <permission name="android.permission.DELETE_PACKAGES"/>
+    <permission name="android.permission.READ_INSTALL_SESSIONS"/>
+    <permission name="android.permission.READ_INSTALLED_SESSION_PATHS"/>
+    <permission name="android.permission.WAKE_LOCK"/>
+    <permission name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <permission name="android.permission.HIDE_NON_SYSTEM_OVERLAY_WINDOWS"/>
+    <permission name="android.permission.USE_RESERVED_DISK"/>
+    <permission name="android.permission.UPDATE_APP_OPS_STATS"/>
+    <permission name="android.permission.MANAGE_APP_OPS_MODES"/>
+    <permission name="android.permission.INTERACT_ACROSS_USERS_FULL"/>
+    <permission name="android.permission.SUBSTITUTE_NOTIFICATION_APP_NAME"/>
+    <permission name="android.permission.PACKAGE_USAGE_STATS"/>
+    <permission name="android.permission.QUERY_ALL_PACKAGES"/>
+    <permission name="android.permission.POST_NOTIFICATIONS"/>
+    <permission name="android.permission.FOREGROUND_SERVICE"/>
+    <permission name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED"/>
+    <permission name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER"/>
+    <permission name="com.google.android.permission.INSTALL_WEARABLE_PACKAGES"/>
+    <permission name="com.android.packageinstaller.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>
+    <permission name="com.android.packageinstaller.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>
+  </privapp-permissions>
+</permissions>

@@ -10,7 +10,7 @@ import sys
 import zipfile
 
 MODULE_NAME = "nabu-global-helper"
-VERSION = "v2.0.1"
+VERSION = "v2.0.2"
 
 # Extensions that need CRLF -> LF conversion for Android
 SHELL_EXTENSIONS = {".sh"}

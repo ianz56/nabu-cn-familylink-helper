@@ -93,7 +93,57 @@ apply_refresh_all_users() {
   done
 }
 
+enforce_supervision_permissions() {
+  log "Enforcing Family Link & Supervision permissions, Doze whitelists, and MIUI AppOps..."
+
+  # 1. Whitelist from Battery Optimization / Doze
+  dumpsys deviceidle whitelist +com.google.android.gms.supervision >/dev/null 2>&1
+  dumpsys deviceidle whitelist +com.google.android.apps.kids.familylinkhelper >/dev/null 2>&1
+  dumpsys deviceidle whitelist +com.google.android.gms >/dev/null 2>&1
+  dumpsys deviceidle whitelist +com.google.android.apps.wellbeing >/dev/null 2>&1
+
+  # 2. Iterate all users to grant permissions and MIUI AppOps
+  pm list users 2>/dev/null | while IFS= read -r line; do
+    case "$line" in
+      *UserInfo*) ;;
+      *) continue ;;
+    esac
+    UID_NUM=$(echo "$line" | sed -n 's/.*UserInfo{\([0-9]*\):.*/\1/p')
+    [ -z "$UID_NUM" ] && continue
+
+    # Grant Package Usage Stats & Overlay permissions
+    pm grant --user "$UID_NUM" com.google.android.gms.supervision android.permission.PACKAGE_USAGE_STATS >/dev/null 2>&1
+    pm grant --user "$UID_NUM" com.google.android.gms.supervision android.permission.SYSTEM_ALERT_WINDOW >/dev/null 2>&1
+    pm grant --user "$UID_NUM" com.google.android.gms.supervision android.permission.POST_NOTIFICATIONS >/dev/null 2>&1
+    pm grant --user "$UID_NUM" com.google.android.apps.kids.familylinkhelper android.permission.SYSTEM_ALERT_WINDOW >/dev/null 2>&1
+    pm grant --user "$UID_NUM" com.google.android.apps.kids.familylinkhelper android.permission.POST_NOTIFICATIONS >/dev/null 2>&1
+
+    # Standard AOSP AppOps
+    appops set --user "$UID_NUM" com.google.android.gms.supervision SYSTEM_ALERT_WINDOW allow >/dev/null 2>&1
+    appops set --user "$UID_NUM" com.google.android.gms.supervision GET_USAGE_STATS allow >/dev/null 2>&1
+    appops set --user "$UID_NUM" com.google.android.gms.supervision SCHEDULE_EXACT_ALARM allow >/dev/null 2>&1
+    appops set --user "$UID_NUM" com.google.android.gms.supervision AUTO_REVOKE_PERMISSIONS_IF_UNUSED ignore >/dev/null 2>&1
+
+    appops set --user "$UID_NUM" com.google.android.apps.kids.familylinkhelper SYSTEM_ALERT_WINDOW allow >/dev/null 2>&1
+    appops set --user "$UID_NUM" com.google.android.apps.kids.familylinkhelper GET_USAGE_STATS allow >/dev/null 2>&1
+    appops set --user "$UID_NUM" com.google.android.apps.kids.familylinkhelper AUTO_REVOKE_PERMISSIONS_IF_UNUSED ignore >/dev/null 2>&1
+
+    # Grant Usage Stats to GMS & Wellbeing for parental controls reporting
+    pm grant --user "$UID_NUM" com.google.android.gms android.permission.PACKAGE_USAGE_STATS >/dev/null 2>&1
+    pm grant --user "$UID_NUM" com.google.android.apps.wellbeing android.permission.PACKAGE_USAGE_STATS >/dev/null 2>&1
+    appops set --user "$UID_NUM" com.google.android.gms GET_USAGE_STATS allow >/dev/null 2>&1
+    appops set --user "$UID_NUM" com.google.android.apps.wellbeing GET_USAGE_STATS allow >/dev/null 2>&1
+
+    # Xiaomi / MIUI specific AppOps (10008: Autostart, 10020: Popup window, 10021: Background popup, 10023: Lockscreen popup, 10033: Background start)
+    for op in 10007 10008 10020 10021 10022 10023 10033; do
+      appops set --user "$UID_NUM" com.google.android.gms.supervision "$op" allow >/dev/null 2>&1
+      appops set --user "$UID_NUM" com.google.android.apps.kids.familylinkhelper "$op" allow >/dev/null 2>&1
+    done
+  done
+}
+
 apply_refresh_all_users
+enforce_supervision_permissions
 
 # --- Verify ---
 # Small delay to let the setting take effect, then log the user list
