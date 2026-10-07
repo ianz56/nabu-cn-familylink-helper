@@ -1,6 +1,6 @@
 id=nabu-global-helper
 name=Nabu Global Auto-Switch & Display Helper
-version=v2.0.4
-versionCode=204
+version=v2.1.0
+versionCode=210
 author=Ian Perdiansah
-description=Auto-kill secondary users on switch, auto-switch to User 0 on screen off, and lock display refresh rate at 60Hz for Xiaomi Pad 5 (nabu) on Global ROM.
+description=Auto-kill secondary users on switch, auto-switch to User 0 on screen off, 60Hz lock, and Second Space adaptive thermal profile for Xiaomi Pad 5 (nabu).

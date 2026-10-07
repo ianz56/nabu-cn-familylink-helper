@@ -101,20 +101,30 @@ Berikut ringkasan kronologis perbaikan dari awal hingga versi terbaru:
   2. **Display Refresh Rate Lock**: Pengunci 60Hz stabil di semua user.
   3. **Play Integrity Spoofing**: `verifiedbootstate=green`, `flash.locked=1`, `veritymode=enforcing`, dll. via `system.prop` & `resetprop`.
 
-### 🔹 v2.0.1 (Fix SurfaceFlinger Hardware 60Hz Mode Lock on User Switch)
-- **Fix Stuck 120Hz Hardware Panel**: Mengidentifikasi bahwa pergantian multi-user di HyperOS/MIUI me-reset display mode ke default hardware Mode 0 (120Hz) di SurfaceFlinger meskipun di pengaturan Android tertulis 60Hz.
-- **SurfaceFlinger Binder Mode Override**: Menambahkan perintah langsung `service call SurfaceFlinger 1035 i32 1` di `service.sh`, `auto_switch.sh`, dan `action.sh` untuk memaksa SurfaceFlinger hardware display mode beralih ke Mode 1 (1600x2560 @ 60.00 Hz) secara instan dan persisten saat user berpindah.
+### 🔹 v2.1.0 (Second Space Adaptive Thermal Profile & Hysteresis)
+- **Profil Thermal Khusus Second Space**: Menerapkan adaptive thermal throttling dinamis yang aktif hanya ketika perangkat berada di Second Space (User != 0), dan otomatis kembali ke baseline stok saat berpindah ke Main Space (User 0).
+- **Dynamic Baseline Capture (Tanpa Hardcode)**: Saat modul/daemon mulai berjalan, nilai runtime riil `scaling_max_freq` CPU (LITTLE, BIG, PRIME) dan `max_gpuclk` GPU dicatat sebagai baseline pemulihan (*no hardcoding*).
+- **Sensor Resolving Dinamis**: Mendeteksi sensor suhu secara dinamis via sysfs (`quiet_therm` untuk skin/chassis temperature Xiaomi Pad 5 nabu, dengan fallback ke `cpu_therm`/`battery`), bukan hardcode index.
+- **Hysteresis Multi-Tier (1°C Margin)**:
+  - Tier 0 (<= 35°C): Baseline Normal / Stock (100% performa).
+  - Tier 1 (>= 36°C): Mild reduction (memotong boost turbo tertinggi yang memboroskan daya & suhu).
+  - Tier 2 (>= 38°C): Moderate throttle (keseimbangan suhu stabil untuk game Minecraft/Roblox + YouTube floating).
+  - Tier 3 (>= 40°C): Aggressive throttle (menahan laju kenaikan suhu).
+  - Tier 4 (>= 42°C): Strict limit (menjaga kestabilan suhu & mencegah overheating).
+  - Pemulihan bertahap saat suhu mendingin dengan margin 1°C (misal turun ke Tier 3 hanya jika suhu < 41°C) untuk mencegah fluktuasi frekuensi naik-turun cepat.
+- **Integritas Sistem & Safety Kernel**: Berjalan terintegrasi pada background daemon `auto_switch.sh` dengan interval polling 5 detik tanpa daemon tambahan. Driver hardware/kernel thermal trip (LMh) tetap 100% utuh tanpa intervensi.
 
 ---
 
-## 🔑 4. STATUS FITUR SAAT INI (VERIFIKASI TERAKHIR - v2.0.1)
+## 🔑 4. STATUS FITUR SAAT INI (VERIFIKASI TERAKHIR - v2.1.0)
 
 | Fitur | Status | Catatan Teknis |
 | :--- | :---: | :--- |
 | **Stop User On Switch** | ✅ AKTIF | `am set-stop-user-on-switch true` berjalan otomatis di booting. Secondary user langsung mati saat beralih. |
 | **Auto Switch Screen Off** | ✅ AKTIF | Pindah otomatis ke User 0 saat layar dimatikan (*screen off*, timeout 10 menit). |
 | **Refresh Rate Lock** | ✅ AKTIF | Layar terkunci secara hardware & sistemik di 60Hz (SurfaceFlinger Mode 1). Kebal terhadap user switch. |
-| **Play Integrity** | ✅ AKTIF | Properti `green` & `locked` disuntikkan via `system.prop` & `resetprop` di `service.sh`. |
+| **Second Space Adaptive Thermal** | ✅ AKTIF | Adaptive throttling bertahap (36°C, 38°C, 40°C, 42°C+) dengan hysteresis & dynamic baseline. Khusus Second Space. |
+| **Play Integrity** | ✅ AKTIF | Konfigurasi integritas stabil bawaan sistem tanpa risiko mismatch. |
 | **Family Link & GMS** | ⚡ NATIVE | Ditangani langsung secara native & resmi oleh ROM Global tanpa modifikasi modul. |
 
 ---
@@ -123,7 +133,7 @@ Berikut ringkasan kronologis perbaikan dari awal hingga versi terbaru:
 
 Jika Anda memulai perbincangan di **Chat Baru (New Conversation)**, berikan petunjuk singkat berikut ke AI:
 
-> *"Saya ingin melanjutkan pengembangan modul Magisk `nabu-global-helper` (v2.0.1 branch `lite-global`) di `kill-users-nabu`. Modul ini berfokus pada auto-switch multi-user, 60Hz lock, dan Play Integrity spoofing untuk Xiaomi Pad 5 (nabu) ROM Global."*
+> *"Saya ingin melanjutkan pengembangan modul Magisk `nabu-global-helper` (v2.1.0 branch `lite-global`) di `kill-users-nabu`. Modul ini berfokus pada auto-switch multi-user, 60Hz lock, dan Second Space adaptive thermal profile untuk Xiaomi Pad 5 (nabu) ROM Global."*
 
 ### Perintah Penting untuk Build & Flash:
 1. **Build Modul Baru**:
@@ -132,8 +142,8 @@ Jika Anda memulai perbincangan di **Chat Baru (New Conversation)**, berikan petu
    ```
 2. **Flash Modul ke Tablet via ADB**:
    ```bash
-   adb push nabu-global-helper-v2.0.1.zip /data/local/tmp/
-   adb shell "su -c 'magisk --install-module /data/local/tmp/nabu-global-helper-v2.0.1.zip'"
+   adb push nabu-global-helper-v2.1.0.zip /data/local/tmp/
+   adb shell "su -c 'magisk --install-module /data/local/tmp/nabu-global-helper-v2.1.0.zip'"
    ```
 3. **Push ke GitHub**:
    ```bash

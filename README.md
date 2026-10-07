@@ -12,13 +12,16 @@ Magisk module for Xiaomi Pad 5 (nabu) running MIUI / HyperOS Global ROMs. This l
    - Permanently locks the screen refresh rate to 60Hz across all user spaces (User 0 and secondary users).
    - Periodically re-applies the display rate to prevent MIUI/HyperOS reset glitches.
 
-3. **Play Integrity Spoofing**:
-   - Injects verified bootloader and locked properties (`ro.boot.verifiedbootstate=green`, `ro.boot.flash.locked=1`, etc.) via `system.prop` and `resetprop` in `service.sh` to help achieve `MEETS_DEVICE_INTEGRITY`.
+4. **Second Space Adaptive Thermal Profile**:
+   - Dynamic adaptive throttling based on body/skin temperature (`quiet_therm`) exclusively when inside Second Space.
+   - Stepped cooling curve (36°C, 38°C, 40°C, 42°C+) with 1°C hysteresis to prevent clock oscillating.
+   - Dynamic baseline capture (no hardcoded frequencies) and zero modification to kernel hardware safety trips.
+   - Automatically restores to 100% stock frequencies immediately upon switching back to Main Space (User 0).
 
 ## Installation
 
-1. Build or download `nabu-global-helper-v2.0.0.zip`.
-2. Flash the ZIP file via Magisk Manager or KernelSU.
+1. Build or download `nabu-global-helper-v2.1.0.zip`.
+2. Flash the ZIP file via Magisk Manager, KernelSU, or APatch.
 3. Reboot your device.
 
 ## Author

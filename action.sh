@@ -108,6 +108,20 @@ fi
 apply_refresh_lock 0
 echo ""
 
+# Restore CPU/GPU frequencies to baseline
+MODDIR="${0%/*}"
+BASELINE_FILE="$MODDIR/thermal_baseline.conf"
+if [ -f "$BASELINE_FILE" ]; then
+  . "$BASELINE_FILE"
+  echo "[*] Restoring CPU & GPU frequencies to runtime baseline..."
+  [ -n "$BASE_P0" ] && echo "$BASE_P0" > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null
+  [ -n "$BASE_P4" ] && echo "$BASE_P4" > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null
+  [ -n "$BASE_P7" ] && echo "$BASE_P7" > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null
+  [ -n "$BASE_GPU" ] && [ -f "/sys/class/kgsl/kgsl-3d0/max_gpuclk" ] && echo "$BASE_GPU" > /sys/class/kgsl/kgsl-3d0/max_gpuclk 2>/dev/null
+  echo "    -> Restored (P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU)"
+  echo ""
+fi
+
 echo "[*] Current user status:"
 pm list users 2>/dev/null | while IFS= read -r line; do
   echo "    $line"

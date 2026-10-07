@@ -13,6 +13,7 @@ ui_print "  Features included:"
 ui_print "  1. Auto-kill background users on switch"
 ui_print "  2. Auto-switch to User 0 when screen off"
 ui_print "  3. Display refresh-rate lock (60Hz)"
+ui_print "  4. Second Space Adaptive Thermal Profile"
 ui_print ""
 
 # Set proper permissions for scripts
