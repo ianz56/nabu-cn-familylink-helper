@@ -125,7 +125,7 @@ CPU_P0_MAX="/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"
 CPU_P4_MAX="/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq"
 CPU_P7_MAX="/sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq"
 GPU_MAX_CLK="/sys/class/kgsl/kgsl-3d0/max_gpuclk"
-BASELINE_FILE="$MODDIR/thermal_baseline.conf"
+BASELINE_FILE="/data/local/tmp/nabu_thermal_baseline.conf"
 
 THERMAL_ZONE_PATH=""
 THERMAL_ZONE_TYPE=""
@@ -155,7 +155,7 @@ find_thermal_sensor() {
   return 1
 }
 
-# Baseline variables captured at runtime
+# Baseline variables captured once per daemon startup
 BASE_P0=""
 BASE_P4=""
 BASE_P7=""
@@ -163,22 +163,13 @@ BASE_GPU=""
 CURRENT_TIER=0
 
 capture_baseline_frequencies() {
-  # If a previous baseline file exists, load it
-  if [ -f "$BASELINE_FILE" ]; then
-    . "$BASELINE_FILE"
-    if [ -n "$BASE_P0" ] && [ -n "$BASE_P4" ] && [ -n "$BASE_P7" ]; then
-      log "Loaded existing baseline from $BASELINE_FILE: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU"
-      return 0
-    fi
-  fi
-
-  # Otherwise capture current active maximum limits
+  # Always capture fresh runtime limits directly from sysfs on startup (never reuse previous boot state)
   [ -f "$CPU_P0_MAX" ] && BASE_P0=$(cat "$CPU_P0_MAX" 2>/dev/null)
   [ -f "$CPU_P4_MAX" ] && BASE_P4=$(cat "$CPU_P4_MAX" 2>/dev/null)
   [ -f "$CPU_P7_MAX" ] && BASE_P7=$(cat "$CPU_P7_MAX" 2>/dev/null)
   [ -f "$GPU_MAX_CLK" ] && BASE_GPU=$(cat "$GPU_MAX_CLK" 2>/dev/null)
 
-  # Fallback to cpuinfo_max_freq if scaling_max_freq was empty
+  # Fallback to cpuinfo_max_freq only if scaling_max_freq was completely empty
   [ -z "$BASE_P0" ] && [ -f "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq" ] && BASE_P0=$(cat /sys/devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq 2>/dev/null)
   [ -z "$BASE_P4" ] && [ -f "/sys/devices/system/cpu/cpufreq/policy4/cpuinfo_max_freq" ] && BASE_P4=$(cat /sys/devices/system/cpu/cpufreq/policy4/cpuinfo_max_freq 2>/dev/null)
   [ -z "$BASE_P7" ] && [ -f "/sys/devices/system/cpu/cpufreq/policy7/cpuinfo_max_freq" ] && BASE_P7=$(cat /sys/devices/system/cpu/cpufreq/policy7/cpuinfo_max_freq 2>/dev/null)
@@ -190,7 +181,7 @@ BASE_P4="$BASE_P4"
 BASE_P7="$BASE_P7"
 BASE_GPU="$BASE_GPU"
 EOF
-    log "Runtime baseline captured & saved: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU"
+    log "Runtime baseline captured & saved for current boot: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU"
   else
     log "ERROR: Failed to capture complete frequency baseline!"
   fi
