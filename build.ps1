@@ -2,7 +2,7 @@
 # Run this in PowerShell from the project directory
 
 $ModuleName = "nabu-global-helper"
-$Version = "v2.0.0"
+$Version = "v2.2.0"
 $ZipName = "$ModuleName-$Version.zip"
 $ZipPath = Join-Path $PWD $ZipName
 
@@ -19,11 +19,11 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $filesToInclude = @(
     "module.prop",
+    "post-fs-data.sh",
     "service.sh",
     "action.sh",
     "auto_switch.sh",
     "customize.sh",
-    "system.prop",
     "META-INF\com\google\android\update-binary",
     "META-INF\com\google\android\updater-script"
 )
@@ -40,7 +40,7 @@ if (Test-Path "system") {
 $zip = [System.IO.Compression.ZipFile]::Open($ZipPath, 'Create')
 
 # Shell scripts that need Unix (LF) line endings for Android
-$shellScripts = @("service.sh", "action.sh", "auto_switch.sh", "customize.sh")
+$shellScripts = @("post-fs-data.sh", "service.sh", "action.sh", "auto_switch.sh", "customize.sh")
 
 foreach ($file in $filesToInclude) {
     $fullPath = Join-Path $PWD $file

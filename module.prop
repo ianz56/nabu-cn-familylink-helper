@@ -1,6 +1,6 @@
 id=nabu-global-helper
 name=Nabu Global Auto-Switch & Display Helper
-version=v2.1.0
-versionCode=210
+version=v2.2.0
+versionCode=220
 author=Ian Perdiansah
-description=Auto-kill secondary users on switch, auto-switch to User 0 on screen off, 60Hz lock, and Second Space adaptive thermal profile for Xiaomi Pad 5 (nabu).
+description=Auto-kill secondary users on switch, auto-switch to User 0 on screen off, 60Hz lock, Second Space adaptive thermal profile, and Family Link supervision fix for Xiaomi Pad 5 (nabu).

@@ -10,7 +10,7 @@ import sys
 import zipfile
 
 MODULE_NAME = "nabu-global-helper"
-VERSION = "v2.1.0"
+VERSION = "v2.2.0"
 
 # Extensions that need CRLF -> LF conversion for Android
 SHELL_EXTENSIONS = {".sh"}
@@ -18,6 +18,7 @@ SHELL_EXTENSIONS = {".sh"}
 # Root-level files to include
 ROOT_FILES = [
     "module.prop",
+    "post-fs-data.sh",
     "service.sh",
     "action.sh",
     "auto_switch.sh",
