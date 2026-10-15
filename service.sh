@@ -12,15 +12,42 @@
 
 MODDIR="${0%/*}"
 LOGFILE="$MODDIR/service.log"
+MAX_LOG_SIZE=65536
+
+rotate_logs() {
+  [ ! -f "$LOGFILE" ] && return 0
+  local cur_size
+  cur_size=$(wc -c < "$LOGFILE" 2>/dev/null || echo 0)
+  if [ "$cur_size" -ge "$MAX_LOG_SIZE" ]; then
+    [ -f "${LOGFILE}.1" ] && rm -f "${LOGFILE}.1" 2>/dev/null
+    mv -f "$LOGFILE" "${LOGFILE}.1" 2>/dev/null || true
+    touch "$LOGFILE" 2>/dev/null && chmod 0644 "$LOGFILE" 2>/dev/null || true
+  fi
+}
 
 log() {
-  echo "$(date '+%Y-%m-%d %H:%M:%S') | $1" >> "$LOGFILE"
+  local level="INFO"
+  local msg="$1"
+  if [ -n "$2" ]; then
+    level="$1"
+    msg="$2"
+  else
+    case "$msg" in
+      ERROR*|FAILED*|Failed*) level="ERROR" ;;
+      WARN*|WARNING*) level="WARN" ;;
+    esac
+  fi
+  rotate_logs
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $msg" >> "$LOGFILE" 2>/dev/null || true
 }
+
+MOD_VER="unknown"
+[ -f "$MODDIR/module.prop" ] && MOD_VER=$(grep '^version=' "$MODDIR/module.prop" | cut -d= -f2)
 
 # --- Wait for the system to finish booting ---
 # The Activity Manager isn't available until boot completes, so we poll
 # the 'sys.boot_completed' property before attempting our command.
-log "Module started, waiting for boot to complete..."
+log "INFO" "Nabu Global Helper service started (version=$MOD_VER), waiting for boot to complete..."
 
 MAX_WAIT=120   # seconds
 WAITED=0
@@ -28,16 +55,16 @@ while [ "$(getprop sys.boot_completed)" != "1" ]; do
   sleep 2
   WAITED=$((WAITED + 2))
   if [ "$WAITED" -ge "$MAX_WAIT" ]; then
-    log "ERROR: Timed out waiting for boot_completed after ${MAX_WAIT}s"
+    log "ERROR" "Timed out waiting for boot_completed after ${MAX_WAIT}s"
     exit 1
   fi
 done
 
-log "Boot completed after ~${WAITED}s — applying setting..."
+log "INFO" "Boot completed after ~${WAITED}s — applying settings..."
 
 # --- Apply the setting ---
 RESULT=$(am set-stop-user-on-switch true 2>&1)
-log "am set-stop-user-on-switch true → $RESULT"
+log "INFO" "am set-stop-user-on-switch true → $RESULT"
 
 
 # --- Refresh Rate Enforcement (60Hz) helper on boot ---
@@ -46,9 +73,7 @@ DISPLAY_WIDTH=1600
 DISPLAY_HEIGHT=2560
 
 poke_display_mode() {
-  if cmd display set-user-preferred-display-mode "$DISPLAY_WIDTH" "$DISPLAY_HEIGHT" "$REFRESH_RATE" >/dev/null 2>&1; then
-    log "Display mode preference poked (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${REFRESH_RATE})"
-  fi
+  cmd display set-user-preferred-display-mode "$DISPLAY_WIDTH" "$DISPLAY_HEIGHT" "$REFRESH_RATE" >/dev/null 2>&1 || true
   # SurfaceFlinger setDesiredDisplayModeSpecs / setDisplayMode override (Mode 1 = 60Hz on Xiaomi Pad 5)
   service call SurfaceFlinger 1035 i32 1 >/dev/null 2>&1
 }

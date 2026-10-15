@@ -2,7 +2,7 @@
 # Run this in PowerShell from the project directory
 
 $ModuleName = "nabu-global-helper"
-$Version = "v2.2.0"
+$Version = "v2.2.1"
 $ZipName = "$ModuleName-$Version.zip"
 $ZipPath = Join-Path $PWD $ZipName
 

@@ -22,9 +22,13 @@ Magisk module for Xiaomi Pad 5 (nabu) running MIUI / HyperOS Global ROMs. This l
    - Fixes Google Family Link / GMS Kids `SecurityException` (`Calling identity is not authorized`) on Second Space (`User 11`).
    - Ensures Profile Owner has `isPoOrganizationOwnedDevice="true"` early during `post-fs-data` boot stage, allowing time-limit locking and parent remote locking to work reliably without repeated account sign-ins.
 
+5. **Structured Event-Driven Logging & Multi-Generation Rotation**:
+   - Replaces noisy 30-second polling spam with event-driven telemetry (user switches, drifts, errors, thermal transitions, timeouts).
+   - Introduces multi-generation archive rotation (retaining up to 3 archive generations, strictly capped storage) for reliable multi-week health audits.
+
 ## Installation
 
-1. Build or download `nabu-global-helper-v2.2.0.zip`.
+1. Build or download `nabu-global-helper-v2.2.1.zip`.
 2. Flash the ZIP file via Magisk Manager, KernelSU, or APatch.
 3. Reboot your device.
 

@@ -37,13 +37,39 @@ POLL_INTERVAL=5
 REFRESH_REAPPLY_INTERVAL=30
 # ───────────────────────────────────────────────────────────────────
 
-log() {
-  # Keep log file from growing too large (max ~50KB)
-  if [ -f "$LOGFILE" ] && [ "$(wc -c < "$LOGFILE" 2>/dev/null)" -gt 51200 ]; then
-    tail -n 100 "$LOGFILE" > "$LOGFILE.tmp"
-    mv "$LOGFILE.tmp" "$LOGFILE"
+# ── Logging & Multi-Generation Rotation ────────────────────────────
+MAX_LOG_SIZE=65536   # 64 KB per log file
+HEARTBEAT_INTERVAL=600 # 10 minutes between routine heartbeats
+LAST_HEARTBEAT=0
+
+rotate_logs() {
+  [ ! -f "$LOGFILE" ] && return 0
+  local cur_size
+  cur_size=$(wc -c < "$LOGFILE" 2>/dev/null || echo 0)
+  if [ "$cur_size" -ge "$MAX_LOG_SIZE" ]; then
+    # Shift archive generations safely: .2 -> .3, .1 -> .2, active -> .1
+    [ -f "${LOGFILE}.2" ] && mv -f "${LOGFILE}.2" "${LOGFILE}.3" 2>/dev/null
+    [ -f "${LOGFILE}.1" ] && mv -f "${LOGFILE}.1" "${LOGFILE}.2" 2>/dev/null
+    mv -f "$LOGFILE" "${LOGFILE}.1" 2>/dev/null || true
+    touch "$LOGFILE" 2>/dev/null && chmod 0644 "$LOGFILE" 2>/dev/null || true
+    echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] Log rotated (archive generation created, limit: ${MAX_LOG_SIZE}B)" >> "$LOGFILE" 2>/dev/null || true
   fi
-  echo "$(date '+%Y-%m-%d %H:%M:%S') | $1" >> "$LOGFILE"
+}
+
+log() {
+  local level="INFO"
+  local msg="$1"
+  if [ -n "$2" ]; then
+    level="$1"
+    msg="$2"
+  else
+    case "$msg" in
+      ERROR*|FAILED*|Failed*) level="ERROR" ;;
+      WARN*|WARNING*) level="WARN" ;;
+    esac
+  fi
+  rotate_logs
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $msg" >> "$LOGFILE" 2>/dev/null || true
 }
 
 get_screen_state() {
@@ -56,16 +82,18 @@ get_current_user() {
 }
 
 poke_display_mode() {
+  local verbose="${1:-0}"
   # Best effort: ask Android DisplayManager to prefer the 60Hz native mode.
   # Not all ROMs expose this shell command, so failure is intentionally silent.
   if cmd display set-user-preferred-display-mode "$DISPLAY_WIDTH" "$DISPLAY_HEIGHT" "$REFRESH_RATE" >/dev/null 2>&1; then
-    log "Display mode preference poked (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${REFRESH_RATE})"
+    [ "$verbose" -eq 1 ] && log "INFO" "Display mode preference poked (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}@${REFRESH_RATE})"
   fi
   # Directly force SurfaceFlinger Hardware Display Mode to Mode 1 (60Hz)
   service call SurfaceFlinger 1035 i32 1 >/dev/null 2>&1
 }
 
 apply_global_refresh_lock() {
+  local verbose="${1:-0}"
   # Some display state is cached globally by the framework/vendor service,
   # so write global keys too. Unknown keys are harmless on ROMs that ignore them.
   settings put global peak_refresh_rate "${REFRESH_RATE}.0" >/dev/null 2>&1
@@ -73,13 +101,18 @@ apply_global_refresh_lock() {
   settings put global user_refresh_rate "$REFRESH_RATE" >/dev/null 2>&1
   settings put global miui_refresh_rate "$REFRESH_RATE" >/dev/null 2>&1
 
-  poke_display_mode
+  poke_display_mode "$verbose"
 }
 
 apply_refresh_lock() {
   USER_ID="$1"
+  local verbose="${2:-0}"
 
   [ -z "$USER_ID" ] && return 1
+
+  # Sample current peak rate before applying to detect drift
+  local prev_peak
+  prev_peak=$(settings --user "$USER_ID" get system peak_refresh_rate 2>/dev/null)
 
   # AOSP-ish keys
   settings --user "$USER_ID" put system peak_refresh_rate "${REFRESH_RATE}.0" >/dev/null 2>&1
@@ -90,7 +123,7 @@ apply_refresh_lock() {
   settings --user "$USER_ID" put system miui_refresh_rate "$REFRESH_RATE" >/dev/null 2>&1
   settings --user "$USER_ID" put secure user_refresh_rate "$REFRESH_RATE" >/dev/null 2>&1
 
-  apply_global_refresh_lock
+  apply_global_refresh_lock "$verbose"
 
   PEAK_RATE=$(settings --user "$USER_ID" get system peak_refresh_rate 2>/dev/null)
   MIN_RATE=$(settings --user "$USER_ID" get system min_refresh_rate 2>/dev/null)
@@ -99,11 +132,18 @@ apply_refresh_lock() {
   SECURE_USER_RATE=$(settings --user "$USER_ID" get secure user_refresh_rate 2>/dev/null)
   GLOBAL_PEAK=$(settings get global peak_refresh_rate 2>/dev/null)
 
-  log "Refresh lock applied for user $USER_ID (peak=$PEAK_RATE, min=$MIN_RATE, user=$USER_RATE, miui=$MIUI_RATE, secure_user=$SECURE_USER_RATE, global_peak=$GLOBAL_PEAK)"
+  # Verify that the refresh rate was successfully enforced
+  if [ "$PEAK_RATE" != "${REFRESH_RATE}.0" ] && [ "$PEAK_RATE" != "$REFRESH_RATE" ]; then
+    log "ERROR" "Failed to enforce refresh lock for user $USER_ID (current peak: '$PEAK_RATE', expected: '${REFRESH_RATE}.0')"
+  elif [ "$verbose" -eq 1 ]; then
+    log "INFO" "Refresh lock applied for user $USER_ID (peak=$PEAK_RATE, min=$MIN_RATE, user=$USER_RATE, miui=$MIUI_RATE, secure_user=$SECURE_USER_RATE, global_peak=$GLOBAL_PEAK)"
+  elif [ "$prev_peak" != "${REFRESH_RATE}.0" ] && [ "$prev_peak" != "$REFRESH_RATE" ] && [ -n "$prev_peak" ]; then
+    log "WARN" "Refresh rate drift detected on user $USER_ID (was peak=$prev_peak) — re-enforced ${REFRESH_RATE}Hz"
+  fi
 }
 
 apply_refresh_all_users() {
-  log "Applying refresh lock for all users..."
+  log "INFO" "Applying refresh lock for all users..."
 
   pm list users 2>/dev/null | while IFS= read -r line; do
     case "$line" in
@@ -112,7 +152,7 @@ apply_refresh_all_users() {
     esac
 
     USER_ID=$(echo "$line" | sed -n 's/.*UserInfo{\([0-9]*\):.*/\1/p')
-    [ -n "$USER_ID" ] && apply_refresh_lock "$USER_ID"
+    [ -n "$USER_ID" ] && apply_refresh_lock "$USER_ID" 1
   done
 }
 
@@ -394,8 +434,8 @@ while true; do
   fi
 
   if [ "$CURRENT_USER" != "$LAST_USER" ]; then
-    log "Foreground user changed to $CURRENT_USER — enforcing ${REFRESH_RATE}Hz lock"
-    apply_refresh_lock "$CURRENT_USER"
+    log "INFO" "Foreground user changed to $CURRENT_USER — enforcing ${REFRESH_RATE}Hz lock"
+    apply_refresh_lock "$CURRENT_USER" 1
 
     # If switched back to Main Space (user 0), immediately restore baseline frequencies
     if [ "$CURRENT_USER" = "0" ]; then
@@ -407,10 +447,19 @@ while true; do
     SCREEN_OFF_TIMESTAMP=0
   else
     if [ $((NOW - LAST_REFRESH_APPLY)) -ge "$REFRESH_REAPPLY_INTERVAL" ]; then
-      log "Periodic refresh rate re-apply for user $CURRENT_USER"
-      apply_refresh_lock "$CURRENT_USER"
+      # Silent re-apply (logs only if drift is detected)
+      apply_refresh_lock "$CURRENT_USER" 0
       LAST_REFRESH_APPLY="$NOW"
     fi
+  fi
+
+  # ── Periodic Heartbeat (Every 10 minutes) ──
+  if [ $((NOW - LAST_HEARTBEAT)) -ge "$HEARTBEAT_INTERVAL" ]; then
+    tz_temp=0
+    [ -n "$THERMAL_ZONE_PATH" ] && tz_temp=$(cat "$THERMAL_ZONE_PATH/temp" 2>/dev/null || echo 0)
+    temp_c=$((tz_temp / 1000))
+    log "INFO" "Heartbeat: daemon active (user=$CURRENT_USER, screen=$SCREEN_STATE, temp=${temp_c}°C, tier=$CURRENT_TIER, refresh=${REFRESH_RATE}Hz)"
+    LAST_HEARTBEAT="$NOW"
   fi
 
   # ── Thermal Management ──
@@ -445,12 +494,14 @@ while true; do
         # Wait a moment then verify
         sleep 5
         NEW_USER=$(get_current_user)
-        log "Current user is now: $NEW_USER"
         if [ "$NEW_USER" = "0" ]; then
-          apply_refresh_lock "$NEW_USER"
+          log "INFO" "Auto-switch verified: successfully switched to user 0"
+          apply_refresh_lock "$NEW_USER" 1
           restore_baseline_frequencies
           LAST_USER="$NEW_USER"
           LAST_REFRESH_APPLY=$(date +%s)
+        else
+          log "ERROR" "Auto-switch verification failed: expected user 0, but current user is '$NEW_USER'"
         fi
 
         # Reset timer
