@@ -518,21 +518,11 @@ restore_single_node_baseline() {
   # 5. Check module ownership
   case "$applied" in
     ''|'NONE'|*[!0-9]*)
-      if [ "$last_status" = "VENDOR_CLAMPED" ] || [ "$last_status" = "VENDOR_LOWER_PRESERVED" ]; then
-        # Node was clamped by external vendor limit during module throttling.
-        # Test if the clamp is lifted by writing baseline:
-        echo "$base" > "$node_path" 2>/dev/null
-        local readback
-        readback=$(cat "$node_path" 2>/dev/null)
-        if [ "$readback" = "$base" ]; then
-          echo "RESTORED_VERIFIED $readback"
+      if [ "$last_status" = "VENDOR_CLAMPED" ] || [ "$last_status" = "VENDOR_LOWER_PRESERVED" ] || [ "$last_status" = "SAFE_EXTERNAL_LIMIT_PRESERVED" ] || [ "$last_status" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+        if [ "$cur_val" -lt "$base" ] 2>/dev/null; then
+          # Never write baseline or probe unowned clamp! Preserve external limit exactly.
+          echo "SAFE_EXTERNAL_LIMIT_PRESERVED $cur_val"
           return 0
-        elif [ -n "$readback" ] && [ "$readback" -lt "$base" ] 2>/dev/null; then
-          echo "PARTIAL_RESTORE_VENDOR_CLAMP $readback"
-          return 0
-        else
-          echo "RESTORE_FAILED $readback"
-          return 1
         fi
       fi
       # Otherwise, external controller set an unrelated value without module involvement:
@@ -549,7 +539,7 @@ restore_single_node_baseline() {
   # 6. Compare current against module applied value
   if [ "$cur_val" -lt "$applied" ]; then
     # Current is lower than module applied value -> vendor limit preserved
-    echo "VENDOR_LOWER_PRESERVED $cur_val"
+    echo "SAFE_EXTERNAL_LIMIT_PRESERVED $cur_val"
     return 0
   elif [ "$cur_val" -eq "$applied" ]; then
     # Current strictly matches applied -> restore baseline
@@ -615,8 +605,8 @@ restore_hardware_baseline() {
   STATUS_P0="$stat_p0"
   if [ "$stat_p0" = "RESTORED_VERIFIED" ] || [ "$stat_p0" = "ALREADY_BASELINE" ]; then
     STATUS_P0="BASELINE"; APPLIED_P0="NONE"; READBACK_P0="$val_p0"
-  elif [ "$stat_p0" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p0" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
-    APPLIED_P0="NONE"; READBACK_P0="$val_p0"
+  elif [ "$stat_p0" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p0" = "SAFE_EXTERNAL_LIMIT_PRESERVED" ] || [ "$stat_p0" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    STATUS_P0="$stat_p0"; APPLIED_P0="NONE"; READBACK_P0="$val_p0"
   else
     READBACK_P0="$val_p0"
   fi
@@ -624,8 +614,8 @@ restore_hardware_baseline() {
   STATUS_P4="$stat_p4"
   if [ "$stat_p4" = "RESTORED_VERIFIED" ] || [ "$stat_p4" = "ALREADY_BASELINE" ]; then
     STATUS_P4="BASELINE"; APPLIED_P4="NONE"; READBACK_P4="$val_p4"
-  elif [ "$stat_p4" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p4" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
-    APPLIED_P4="NONE"; READBACK_P4="$val_p4"
+  elif [ "$stat_p4" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p4" = "SAFE_EXTERNAL_LIMIT_PRESERVED" ] || [ "$stat_p4" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    STATUS_P4="$stat_p4"; APPLIED_P4="NONE"; READBACK_P4="$val_p4"
   else
     READBACK_P4="$val_p4"
   fi
@@ -633,8 +623,8 @@ restore_hardware_baseline() {
   STATUS_P7="$stat_p7"
   if [ "$stat_p7" = "RESTORED_VERIFIED" ] || [ "$stat_p7" = "ALREADY_BASELINE" ]; then
     STATUS_P7="BASELINE"; APPLIED_P7="NONE"; READBACK_P7="$val_p7"
-  elif [ "$stat_p7" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p7" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
-    APPLIED_P7="NONE"; READBACK_P7="$val_p7"
+  elif [ "$stat_p7" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p7" = "SAFE_EXTERNAL_LIMIT_PRESERVED" ] || [ "$stat_p7" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    STATUS_P7="$stat_p7"; APPLIED_P7="NONE"; READBACK_P7="$val_p7"
   else
     READBACK_P7="$val_p7"
   fi
@@ -642,8 +632,8 @@ restore_hardware_baseline() {
   STATUS_GPU="$stat_gpu"
   if [ "$stat_gpu" = "RESTORED_VERIFIED" ] || [ "$stat_gpu" = "ALREADY_BASELINE" ]; then
     STATUS_GPU="BASELINE"; APPLIED_GPU="NONE"; READBACK_GPU="$val_gpu"
-  elif [ "$stat_gpu" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_gpu" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
-    APPLIED_GPU="NONE"; READBACK_GPU="$val_gpu"
+  elif [ "$stat_gpu" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_gpu" = "SAFE_EXTERNAL_LIMIT_PRESERVED" ] || [ "$stat_gpu" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    STATUS_GPU="$stat_gpu"; APPLIED_GPU="NONE"; READBACK_GPU="$val_gpu"
   else
     READBACK_GPU="$val_gpu"
   fi
@@ -657,11 +647,11 @@ restore_hardware_baseline() {
     case "$st" in
       RESTORED_VERIFIED|ALREADY_BASELINE)
         ;;
-      VENDOR_LOWER_PRESERVED|PARTIAL_RESTORE_VENDOR_CLAMP)
+      VENDOR_LOWER_PRESERVED|SAFE_EXTERNAL_LIMIT_PRESERVED|PARTIAL_RESTORE_VENDOR_CLAMP)
         fully_restored=0
         safe_vendor=1
         ;;
-      RESTORE_FAILED|OWNERSHIP_UNCERTAIN|STALE_BOOT_ID|UNREADABLE|INVALID_BASELINE|NODE_MISSING)
+      RESTORE_FAILED|OWNERSHIP_UNCERTAIN|STALE_BOOT_ID|UNREADABLE|INVALID_BASELINE|NODE_MISSING|*)
         fully_restored=0
         has_failure=1
         ;;

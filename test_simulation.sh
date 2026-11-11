@@ -580,11 +580,48 @@ assert_eq "Initial write clamped below target: APPLIED remains NONE" "VENDOR_LOW
 res=$(apply_single_node_limit "CPU_P4" "$MOCK_CLAMP_FILE" 2131200 2419200 "NONE" "boot-1" "boot-1")
 assert_eq "Subsequent tier change preserves vendor clamp: APPLIED remains NONE" "VENDOR_LOWER_PRESERVED NONE 1056000" "$res"
 
-# 8. Restore operation after a clamped apply
+# 8. Regression Tests A through F for Single-Node Baseline Restoration
+# Test A — Unowned vendor clamp
+echo "1056000" > "$MOCK_CLAMP_FILE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_CLAMP_FILE" 2419200 "NONE" "boot-1" "boot-1" "VENDOR_CLAMPED")
+readback=$(cat "$MOCK_CLAMP_FILE")
+assert_eq "Test A: Unowned vendor clamp returns SAFE_EXTERNAL_LIMIT_PRESERVED" "SAFE_EXTERNAL_LIMIT_PRESERVED 1056000" "$res"
+assert_eq "Test A: No write to node; readback remains 1056000" "1056000" "$readback"
+
+# Test B — Unowned preserved lower limit
+echo "1612800" > "$MOCK_CLAMP_FILE"
 res=$(restore_single_node_baseline "CPU_P4" "$MOCK_CLAMP_FILE" 2419200 "NONE" "boot-1" "boot-1" "VENDOR_LOWER_PRESERVED")
 readback=$(cat "$MOCK_CLAMP_FILE")
-assert_eq "Restore after clamped apply attempts restore to baseline" "RESTORED_VERIFIED 2419200" "$res"
-assert_eq "Node restored to baseline" "2419200" "$readback"
+assert_eq "Test B: Unowned lower limit returns SAFE_EXTERNAL_LIMIT_PRESERVED" "SAFE_EXTERNAL_LIMIT_PRESERVED 1612800" "$res"
+assert_eq "Test B: Current value remains unchanged at 1612800" "1612800" "$readback"
+
+# Test C — Positively owned module cap
+echo "2131200" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 2131200 "boot-1" "boot-1" "APPLIED_VERIFIED")
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test C: Positively owned cap permits baseline restore" "RESTORED_VERIFIED 2419200" "$res"
+assert_eq "Test C: Node restored to baseline 2419200" "2419200" "$readback"
+
+# Test D — External clamp below module-owned cap
+echo "1612800" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 2131200 "boot-1" "boot-1" "APPLIED_VERIFIED")
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test D: External clamp below module cap preserved" "SAFE_EXTERNAL_LIMIT_PRESERVED 1612800" "$res"
+assert_eq "Test D: Current value unchanged at 1612800" "1612800" "$readback"
+
+# Test E — External controller returns node to baseline
+echo "2419200" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 "NONE" "boot-1" "boot-1" "VENDOR_CLAMPED")
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test E: External controller return to baseline returns ALREADY_BASELINE" "ALREADY_BASELINE 2419200" "$res"
+assert_eq "Test E: Node remains at baseline 2419200 without write" "2419200" "$readback"
+
+# Test F — Unowned unrelated value
+echo "2208000" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 "NONE" "boot-1" "boot-1" "BASELINE" || true)
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test F: Unowned unrelated value returns OWNERSHIP_UNCERTAIN" "OWNERSHIP_UNCERTAIN 2208000" "$res"
+assert_eq "Test F: Node remains 2208000 without write" "2208000" "$readback"
 
 # 9. External controller sets an unrelated value without module involvement
 echo "2208000" > "$MOCK_NODE"
@@ -697,23 +734,61 @@ assert_eq "Daemon restart reloads CURRENT_TIER" "3" "$CURRENT_TIER"
 assert_eq "Daemon restart reloads APPLIED_P4" "1612800" "$APPLIED_P4"
 assert_eq "Daemon restart reloads STATUS_P4" "APPLIED_VERIFIED" "$STATUS_P4"
 
+# Test G — Four-node aggregation
+# Combine:
+# - One fully restored CPU cluster (P0: cur=1632000, APPLIED=1632000, base=1785600 -> RESTORED_VERIFIED)
+# - One safe vendor-limited cluster (P4: cur=1056000, APPLIED=NONE, STATUS=VENDOR_CLAMPED -> SAFE_EXTERNAL_LIMIT_PRESERVED)
+# - One unrelated uncertain cluster (P7: cur=2208000, APPLIED=NONE, STATUS=BASELINE -> OWNERSHIP_UNCERTAIN)
+# - One fully restored GPU node (GPU: cur=499200000, APPLIED=499200000, base=675000000 -> RESTORED_VERIFIED)
+echo "1632000" > "$CPU_P0_MAX"
+echo "1056000" > "$CPU_P4_MAX"
+echo "2208000" > "$CPU_P7_MAX"
+echo "499200000" > "$GPU_MAX_CLK"
+
+APPLIED_P0="1632000"; APPLIED_P4="NONE"; APPLIED_P7="NONE"; APPLIED_GPU="499200000"
+STATUS_P0="APPLIED_VERIFIED"; STATUS_P4="VENDOR_CLAMPED"; STATUS_P7="BASELINE"; STATUS_GPU="APPLIED_VERIFIED"
+save_ownership_records
+
+agg_rc=0
+restore_hardware_baseline "TEST_FOUR_NODE_AGGREGATION" || agg_rc=$?
+
+assert_eq "Test G: Aggregate return code indicates incomplete restore" "1" "$agg_rc"
+assert_eq "Test G: Aggregate recovery pending is set" "1" "$RECOVERY_PENDING"
+assert_eq "Test G: P0 restored to baseline" "$BASE_P0" "$(cat "$CPU_P0_MAX")"
+assert_eq "Test G: P4 vendor clamp preserved" "1056000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Test G: P7 uncertain node untouched" "2208000" "$(cat "$CPU_P7_MAX")"
+assert_eq "Test G: GPU restored to baseline" "$BASE_GPU" "$(cat "$GPU_MAX_CLK")"
+
 echo ""
 
 # ─────────────────────────────────────────────────────────────
-# 8. PRODUCTION CLEANUP INTEGRATION TEST (lib/daemon_cleanup.sh)
+# 8. PRODUCTION CLEANUP INTEGRATION TESTS (lib/daemon_cleanup.sh)
 # ─────────────────────────────────────────────────────────────
-echo "── 8. Production Cleanup Integration Test ──────────────────"
+echo "── 8. Production Cleanup Integration Tests ─────────────────"
 
-SHUTDOWN_TEST_DIR="$TEST_DIR/shutdown_test"
-mkdir -p "$SHUTDOWN_TEST_DIR"
-TEST_PID_FILE="$SHUTDOWN_TEST_DIR/daemon.pid"
-TEST_LOG_FILE="$SHUTDOWN_TEST_DIR/daemon.log"
+# ── Scenario 1: Complete Restoration ──
+# Module-owned mock cap, successful restore, PID removed, log reports success, no recovery pending.
+SCENARIO1_DIR="$TEST_DIR/cleanup_scenario1"
+mkdir -p "$SCENARIO1_DIR"
+SCEN1_PID_FILE="$SCENARIO1_DIR/daemon.pid"
+SCEN1_LOG_FILE="$SCENARIO1_DIR/daemon.log"
 
-# Prepare test daemon script that sources real production libraries
-cat << DAEMON_SCRIPT > "$SHUTDOWN_TEST_DIR/run_daemon.sh"
+# Reset hardware nodes to baseline except P4 which has a module-owned cap
+echo "$BASE_P0" > "$CPU_P0_MAX"
+echo "1920000" > "$CPU_P4_MAX"
+echo "$BASE_P7" > "$CPU_P7_MAX"
+echo "$BASE_GPU" > "$GPU_MAX_CLK"
+
+APPLIED_P0="NONE"; APPLIED_P4="1920000"; APPLIED_P7="NONE"; APPLIED_GPU="NONE"
+STATUS_P0="BASELINE"; STATUS_P4="APPLIED_VERIFIED"; STATUS_P7="BASELINE"; STATUS_GPU="BASELINE"
+CURRENT_TIER=1
+RECOVERY_PENDING=0
+save_ownership_records
+
+cat << DAEMON_SCRIPT1 > "$SCENARIO1_DIR/run_daemon.sh"
 #!/bin/sh
-PID_FILE="$TEST_PID_FILE"
-LOG_FILE="$TEST_LOG_FILE"
+PID_FILE="$SCEN1_PID_FILE"
+LOG_FILE="$SCEN1_LOG_FILE"
 CPU_P0_MAX="$CPU_P0_MAX"
 CPU_P4_MAX="$CPU_P4_MAX"
 CPU_P7_MAX="$CPU_P7_MAX"
@@ -726,56 +801,134 @@ BASE_P4="$BASE_P4"
 BASE_P7="$BASE_P7"
 BASE_GPU="$BASE_GPU"
 
+log() {
+  local msg="\$1"
+  local lvl="\${2:-INFO}"
+  echo "[\$lvl] \$msg" >> "\$LOG_FILE"
+}
+
 . "$LIB_DIR/thermal_engine.sh"
 . "$LIB_DIR/daemon_cleanup.sh"
 
 echo "\$\$" > "\$PID_FILE"
 setup_daemon_signals
 
-# Set a throttled state to verify restoration on shutdown
-echo "1920000" > "$CPU_P4_MAX"
-APPLIED_P4="1920000"
-STATUS_P4="APPLIED_VERIFIED"
-save_ownership_records
-
 while true; do
   sleep 0.1
 done
-DAEMON_SCRIPT
+DAEMON_SCRIPT1
 
-sh "$SHUTDOWN_TEST_DIR/run_daemon.sh" &
-DAEMON_PID=$!
+sh "$SCENARIO1_DIR/run_daemon.sh" &
+SCEN1_PID=$!
 
 wait_start=0
-while [ ! -f "$TEST_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
+while [ ! -f "$SCEN1_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
   sleep 0.05
   wait_start=$((wait_start + 1))
 done
 
-assert_eq "Production daemon spawned" "1" "$(kill -0 "$DAEMON_PID" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "Scenario 1: Daemon process spawned" "1" "$(kill -0 "$SCEN1_PID" 2>/dev/null && echo 1 || echo 0)"
 
 # Send SIGTERM to invoke production cleanup
-kill -TERM "$DAEMON_PID" 2>/dev/null
+kill -TERM "$SCEN1_PID" 2>/dev/null
 
 wait_stop=0
-while kill -0 "$DAEMON_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
+while kill -0 "$SCEN1_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
   sleep 0.1
   wait_stop=$((wait_stop + 1))
 done
 
-assert_eq "Production daemon terminated on SIGTERM" "1" "$(kill -0 "$DAEMON_PID" 2>/dev/null && echo 0 || echo 1)"
-assert_eq "Production cleanup restored P4 node to baseline" "$BASE_P4" "$(cat "$CPU_P4_MAX")"
-assert_eq "Production cleanup unlinked PID file" "1" "$([ ! -f "$TEST_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 1: Daemon terminated cleanly on SIGTERM" "1" "$(kill -0 "$SCEN1_PID" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "Scenario 1: Hardware node P4 restored to baseline" "$BASE_P4" "$(cat "$CPU_P4_MAX")"
+assert_eq "Scenario 1: PID file unlinked after restoration" "1" "$([ ! -f "$SCEN1_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 1: Log records CLEANUP_SUCCESS" "1" "$(grep -q "CLEANUP_SUCCESS" "$SCEN1_LOG_FILE" && echo 1 || echo 0)"
+assert_eq "Scenario 1: Log does NOT contain CLEANUP_RECOVERY_PENDING" "0" "$(grep -q "CLEANUP_RECOVERY_PENDING" "$SCEN1_LOG_FILE" && echo 1 || echo 0)"
 
-# Verify Idempotency of production_cleanup_on_exit
+# ── Scenario 2: Partial Restoration / Recovery Pending ──
+# Node P4 is ownership-uncertain, cleanup logs CLEANUP_RECOVERY_PENDING, no CLEANUP_SUCCESS, PID file removed after attempt, idempotent.
+SCENARIO2_DIR="$TEST_DIR/cleanup_scenario2"
+mkdir -p "$SCENARIO2_DIR"
+SCEN2_PID_FILE="$SCENARIO2_DIR/daemon.pid"
+SCEN2_LOG_FILE="$SCENARIO2_DIR/daemon.log"
+
+echo "$BASE_P0" > "$CPU_P0_MAX"
+echo "2208000" > "$CPU_P4_MAX"
+echo "$BASE_P7" > "$CPU_P7_MAX"
+echo "$BASE_GPU" > "$GPU_MAX_CLK"
+
+APPLIED_P0="NONE"; APPLIED_P4="NONE"; APPLIED_P7="NONE"; APPLIED_GPU="NONE"
+STATUS_P0="BASELINE"; STATUS_P4="BASELINE"; STATUS_P7="BASELINE"; STATUS_GPU="BASELINE"
+CURRENT_TIER=2
+RECOVERY_PENDING=0
+save_ownership_records
+
+cat << DAEMON_SCRIPT2 > "$SCENARIO2_DIR/run_daemon.sh"
+#!/bin/sh
+PID_FILE="$SCEN2_PID_FILE"
+LOG_FILE="$SCEN2_LOG_FILE"
+CPU_P0_MAX="$CPU_P0_MAX"
+CPU_P4_MAX="$CPU_P4_MAX"
+CPU_P7_MAX="$CPU_P7_MAX"
+GPU_MAX_CLK="$GPU_MAX_CLK"
+STATE_DIR="$STATE_DIR"
+BASELINE_FILE="$BASELINE_FILE"
+OWNERSHIP_FILE="$OWNERSHIP_FILE"
+BASE_P0="$BASE_P0"
+BASE_P4="$BASE_P4"
+BASE_P7="$BASE_P7"
+BASE_GPU="$BASE_GPU"
+
+log() {
+  local msg="\$1"
+  local lvl="\${2:-INFO}"
+  echo "[\$lvl] \$msg" >> "\$LOG_FILE"
+}
+
+. "$LIB_DIR/thermal_engine.sh"
+. "$LIB_DIR/daemon_cleanup.sh"
+
+echo "\$\$" > "\$PID_FILE"
+setup_daemon_signals
+
+while true; do
+  sleep 0.1
+done
+DAEMON_SCRIPT2
+
+sh "$SCENARIO2_DIR/run_daemon.sh" &
+SCEN2_PID=$!
+
+wait_start=0
+while [ ! -f "$SCEN2_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
+  sleep 0.05
+  wait_start=$((wait_start + 1))
+done
+
+assert_eq "Scenario 2: Daemon process spawned" "1" "$(kill -0 "$SCEN2_PID" 2>/dev/null && echo 1 || echo 0)"
+
+# Send SIGTERM to invoke production cleanup
+kill -TERM "$SCEN2_PID" 2>/dev/null
+
+wait_stop=0
+while kill -0 "$SCEN2_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
+  sleep 0.1
+  wait_stop=$((wait_stop + 1))
+done
+
+assert_eq "Scenario 2: Daemon terminated cleanly on SIGTERM without SIGKILL" "1" "$(kill -0 "$SCEN2_PID" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "Scenario 2: Uncertain node P4 NOT overwritten (remains 2208000)" "2208000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Scenario 2: PID file unlinked after cleanup attempt" "1" "$([ ! -f "$SCEN2_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 2: Log records CLEANUP_RECOVERY_PENDING" "1" "$(grep -q "CLEANUP_RECOVERY_PENDING" "$SCEN2_LOG_FILE" && echo 1 || echo 0)"
+assert_eq "Scenario 2: Log does NOT contain CLEANUP_SUCCESS" "0" "$(grep -q "CLEANUP_SUCCESS" "$SCEN2_LOG_FILE" && echo 1 || echo 0)"
+
+# Scenario 2 Idempotency: Calling production_cleanup_on_exit again does not fail
 CLEANUP_RUNNING=0
-PID_FILE="$TEST_PID_FILE"
-echo "$$" > "$TEST_PID_FILE"
+PID_FILE="$SCEN2_PID_FILE"
+echo "$$" > "$SCEN2_PID_FILE"
 (
-  # Run in subshell to test exit behavior
   production_cleanup_on_exit
 )
-assert_eq "Idempotent cleanup removed PID file" "1" "$([ ! -f "$TEST_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 2: Idempotent cleanup removed PID file" "1" "$([ ! -f "$SCEN2_PID_FILE" ] && echo 1 || echo 0)"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
