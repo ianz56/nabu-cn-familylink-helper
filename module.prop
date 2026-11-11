@@ -1,6 +1,6 @@
-id=nabu-global-helper
-name=Nabu Global Auto-Switch & Display Helper
-version=v2.2.1
-versionCode=221
+id=nabu-derpfest-helper
+name=Nabu DerpFest 17 Helper
+version=v3.2.0
+versionCode=320
 author=Ian Perdiansah
-description=Auto-kill secondary users on switch, auto-switch to User 0 on screen off, 60Hz lock, Second Space adaptive thermal profile, and Family Link supervision fix for Xiaomi Pad 5 (nabu).
+description=Dynamic secondary user lifecycle management on screen-off (Scenario A & B) with native stop-on-switch synergy, strict user eligibility validation, and Adaptive Thermal Tier 0-4 for Xiaomi Pad 5 (nabu) on DerpFest 17.

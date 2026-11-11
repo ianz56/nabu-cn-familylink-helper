@@ -3,3 +3,13 @@
 __pycache__/
 .idea/
 .vscode/
+
+# Host backups, device-specific runtime data, and forensic logs
+preinstall-audit/
+nabu-global-helper-v3/
+nabu-global-helper-v3.1.0/
+*.tar.gz
+*.old
+*.tmp*
+state/
+*.pid

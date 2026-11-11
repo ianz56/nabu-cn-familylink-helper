@@ -1,0 +1,6 @@
+id=nabu-derpfest-helper
+name=Nabu DerpFest 17 Helper
+version=v3.2.0
+versionCode=320
+author=Ian Perdiansah
+description=Dynamic secondary user lifecycle management on screen-off (Scenario A & B) with native stop-on-switch synergy, strict user eligibility validation, and Adaptive Thermal Tier 0-4 for Xiaomi Pad 5 (nabu) on DerpFest 17.

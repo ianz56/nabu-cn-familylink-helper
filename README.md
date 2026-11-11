@@ -1,37 +1,46 @@
-# Nabu Global Auto-Switch & Display Helper
+# Nabu DerpFest 17 Helper v3.2.0
 
-Magisk module for Xiaomi Pad 5 (nabu) running MIUI / HyperOS Global ROMs. This lightweight module automatically kills background secondary users on switch, auto-switches back to User 0 on screen off, enforces a 60Hz display refresh-rate lock, and provides Play Integrity spoofing.
+**Target Device:** Xiaomi Pad 5 (`nabu` / `nabu_global`)<br>
+**Target Platform:** DerpFest 17 / Android 17 / API 37 (`CP2A.260605.016`)<br>
+**Kernel:** Linux 4.14.357-g0848039c6f79 (Qualcomm Snapdragon 860 / `sm8150`)<br>
+**Root Provider:** KernelSU 3.3.0 (uapi: 2)<br>
+**Version:** v3.2.0 (versionCode `320`)<br>
 
-## Features
+---
 
-1. **Multi-User Background Management**:
-   - Automatically executes `am set-stop-user-on-switch true` so background secondary users are killed upon user switch.
-   - Background daemon (`auto_switch.sh`) monitors screen state and automatically switches back to User 0 if a secondary user remains inactive while the screen is off (default timeout: 10 minutes).
+## Overview
 
-2. **Display Refresh Rate Lock**:
-   - Permanently locks the screen refresh rate to 60Hz across all user spaces (User 0 and secondary users).
-   - Periodically re-applies the display rate to prevent MIUI/HyperOS reset glitches.
+Nabu DerpFest 17 Helper v3.2.0 provides autonomous dynamic secondary user lifecycle management and Second Space adaptive thermal throttling for the Xiaomi Pad 5 running DerpFest 17.
 
-3. **Second Space Adaptive Thermal Profile**:
-   - Dynamic adaptive throttling based on body/skin temperature (`quiet_therm`) exclusively when inside Second Space.
-   - Stepped cooling curve (36°C, 38°C, 40°C, 42°C+) with 1°C hysteresis to prevent clock oscillating.
-   - Dynamic baseline capture (no hardcoded frequencies) and zero modification to kernel hardware safety trips.
-   - Automatically restores to 100% stock frequencies immediately upon switching back to Main Space (User 0).
+### Core Capabilities
 
-4. **Second Space Family Link Supervision Fix**:
-   - Fixes Google Family Link / GMS Kids `SecurityException` (`Calling identity is not authorized`) on Second Space (`User 11`).
-   - Ensures Profile Owner has `isPoOrganizationOwnedDevice="true"` early during `post-fs-data` boot stage, allowing time-limit locking and parent remote locking to work reliably without repeated account sign-ins.
+1. **Dynamic Multi-User Lifecycle Management:**
+   * **User 0 (Main User):** Permanently immutable and protected. Never stopped, never switched away from automatically, and never subject to thermal throttling.
+   * **Dynamic Secondary Users:** Discovers eligible full secondary users (`android.os.usertype.full.SECONDARY`, e.g. User 1, 2, 10, 11) at runtime via `cmd user list -v`. No user IDs, names, or serials are hardcoded.
+   * **Strict Profile Exclusion:** Work profiles (`profile.MANAGED`), dual-app clone profiles (`profile.CLONE`), Android 15+ private space (`profile.PRIVATE`), system accounts, and guest profiles are strictly excluded from independent lifecycle stops.
 
-5. **Structured Event-Driven Logging & Multi-Generation Rotation**:
-   - Replaces noisy 30-second polling spam with event-driven telemetry (user switches, drifts, errors, thermal transitions, timeouts).
-   - Introduces multi-generation archive rotation (retaining up to 3 archive generations, strictly capped storage) for reliable multi-week health audits.
+2. **Native Stop-on-Switch Synergy:**
+   * Automatically initializes `cmd activity set-stop-user-on-switch true` via `service.sh` upon boot completion.
+   * In **Scenario A** (Secondary User Foreground), when the 600-second display-off deadline is reached, the daemon switches to User 0 (`switch-user 0`). It checks if native switch policy has already stopped the user; duplicate stop commands are bypassed. Fallback `stop-user -w` is issued only if needed.
+   * In **Scenario B** (User 0 Foreground), background-running secondary users are discovered and stopped sequentially after a 600-second display-off period, with display-off and User 0 state revalidated before each operation.
 
-## Installation
+3. **Multi-Signal Fail-Closed Display State Detection:**
+   * Validates hardware backlight brightness (`0`), PowerManager wakefulness (`Asleep` / `Dozing`), and SurfaceFlinger built-in display state (`OFF`).
+   * Any ambiguity or display wake-up instantaneously cancels armed countdown timers.
 
-1. Build or download `nabu-global-helper-v2.2.1.zip`.
-2. Flash the ZIP file via Magisk Manager, KernelSU, or APatch.
-3. Reboot your device.
+4. **Second Space Adaptive Thermal Tier 0–4 (Shared Hardware Governance):**
+   * Operates on shared physical Snapdragon 860 CPU (Kryo 485) and Adreno 640 GPU hardware.
+   * Activated only when an eligible secondary user is foreground.
+   * Dynamically resolves chassis skin thermistor `quiet_therm` (`thermal_zone74`) with fallback validation.
+   * Features exact original HyperOS `lite-global` hysteresis curve:
+     * **Tier 0 (<=35°C):** Baseline (P0=1.78GHz, P4=2.42GHz, P7=2.84GHz, GPU=675MHz)
+     * **Tier 1 (>=36°C / drop <35°C):** P0=Base, P4=2.13GHz, P7=2.13GHz, GPU=585MHz
+     * **Tier 2 (>=38°C / drop <37°C):** P0=1.63GHz, P4=1.92GHz, P7=1.92GHz, GPU=499MHz
+     * **Tier 3 (>=40°C / drop <39°C):** P0=1.48GHz, P4=1.61GHz, P7=1.61GHz, GPU=427MHz
+     * **Tier 4 (>=42°C / drop <41°C):** P0=1.38GHz, P4=1.40GHz, P7=1.40GHz, GPU=345MHz
+   * **Power HAL & libperfmgr Governance:** Reads sysfs values before writing; never overwrites vendor-imposed lower safety limits; tracks external overwrites to avoid thrashing.
+   * **Safe Baseline Restoration:** Runtime baseline captured fresh per-boot (verified via `/proc/sys/kernel/random/boot_id`). Restored immediately whenever User 0 is foreground, when secondary user is stopped, or upon daemon shutdown (trapped `EXIT`, `INT`, `TERM`).
 
-## Author
-
-Created & maintained by **Ian Perdiansah**.
+5. **Diagnostic Action Button:**
+   * Operates in strictly non-destructive diagnostic mode.
+   * Displays dynamic user discovery, native switch state, display signals, thermal telemetry, and CPU/GPU frequencies.
