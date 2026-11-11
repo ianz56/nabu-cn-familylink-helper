@@ -75,6 +75,12 @@ setup_daemon_signals
 
 # ── Daemon-Level Thermal Application Wrapper ──
 apply_adaptive_thermal() {
+  # Baseline must be strictly valid before any thermal enforcement or node evaluation
+  if [ "${BASELINE_VALID:-0}" -ne 1 ] || ! validate_baseline_integrity; then
+    BASELINE_VALID=0
+    return 0
+  fi
+
   # Dynamic runtime sensor recovery: if disabled or path lost, attempt revalidation
   if [ "$THERMAL_ENABLED" -eq 0 ] || [ -z "$THERMAL_ZONE_PATH" ]; then
     find_thermal_sensor || return 0
@@ -153,7 +159,14 @@ apply_adaptive_thermal() {
 log "Auto-switch daemon started (version=v3.2.0, timeout=${TIMEOUT}s, target=DYNAMIC_MULTI_USER, LIVE_EXECUTION=ENABLED)" "INFO"
 
 find_thermal_sensor
-capture_baseline_frequencies
+if capture_baseline_frequencies; then
+  BASELINE_VALID=1
+  log "Hardware baseline captured and validated successfully (P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU)." "INFO"
+else
+  BASELINE_VALID=0
+  THERMAL_ENABLED=0
+  log "WARNING: Hardware baseline validation failed during startup. Adaptive thermal enforcement disabled for system safety. Multi-user lifecycle management remains active." "WARN"
+fi
 
 LAST_USER=""
 SCREEN_OFF_BOOTTIME=0

@@ -13,7 +13,12 @@
 : "${STATE_DIR:=/data/adb/modules/nabu-derpfest-helper/state}"
 : "${BASELINE_FILE:=$STATE_DIR/thermal_baseline.conf}"
 : "${OWNERSHIP_FILE:=$STATE_DIR/thermal_ownership.conf}"
+case "$STATE_DIR" in
+  */*) : "${GUARD_FILE:=${STATE_DIR%/*}/.thermal_boot_guard}" ;;
+  *)   : "${GUARD_FILE:=/data/adb/modules/nabu-derpfest-helper/.thermal_boot_guard}" ;;
+esac
 : "${THERMAL_SYSFS_DIR:=/sys/class/thermal}"
+: "${BASELINE_SAMPLE_DELAY:=1}"
 
 # ── In-Memory State Variables ──
 THERMAL_ENABLED=0
@@ -21,6 +26,7 @@ THERMAL_ZONE_PATH=""
 THERMAL_ZONE_TYPE=""
 CURRENT_TIER=0
 RECOVERY_PENDING=0
+BASELINE_VALID=0
 
 BASE_P0=""
 BASE_P4=""
@@ -157,29 +163,225 @@ find_thermal_sensor() {
   return 1
 }
 
-# ── Runtime Baseline Capture (Per-Boot Identity Enforced) ──
+# ── Strict Baseline Frequency Validation ──
+validate_baseline_value() {
+  local val="$1"
+  case "$val" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if [ "$val" -le 0 ] 2>/dev/null; then
+    return 1
+  fi
+  return 0
+}
+
+# ── Boot-Scoped Initialization Guard ──
+is_same_boot_guard_active() {
+  local cur_boot="$1"
+  if [ -z "$cur_boot" ] || [ "$cur_boot" = "unknown_boot" ]; then
+    return 1
+  fi
+  if [ -f "$GUARD_FILE" ]; then
+    local guard_boot
+    guard_boot=$(grep "^BOOT_ID=" "$GUARD_FILE" 2>/dev/null | cut -d'"' -f2)
+    if [ -n "$guard_boot" ] && [ "$guard_boot" = "$cur_boot" ]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+write_boot_guard() {
+  local cur_boot="$1"
+  if [ -z "$cur_boot" ] || [ "$cur_boot" = "unknown_boot" ]; then
+    return 1
+  fi
+  local guard_dir
+  case "$GUARD_FILE" in
+    */*) guard_dir="${GUARD_FILE%/*}" ;;
+    *)   guard_dir="." ;;
+  esac
+  mkdir -p "$guard_dir" 2>/dev/null
+
+  local tmp_g="${GUARD_FILE}.tmp.$$"
+  cat <<EOF > "$tmp_g" 2>/dev/null
+BOOT_ID="$cur_boot"
+INITIALIZED_AT="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'RUNTIME')"
+STATUS="INITIALIZED"
+EOF
+  if [ ! -s "$tmp_g" ]; then
+    rm -f "$tmp_g" 2>/dev/null
+    return 1
+  fi
+  mv -f "$tmp_g" "$GUARD_FILE" 2>/dev/null || {
+    rm -f "$tmp_g" 2>/dev/null
+    return 1
+  }
+  return 0
+}
+
+# ── Same-Boot Active Ownership Check ──
+has_same_boot_active_ownership() {
+  local cur_boot="$1"
+  if [ -z "$cur_boot" ] || [ "$cur_boot" = "unknown_boot" ]; then
+    return 1
+  fi
+
+  if [ -f "$OWNERSHIP_FILE" ]; then
+    local owner_boot
+    owner_boot=$(grep "^BOOT_ID=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)
+    if [ -n "$owner_boot" ] && [ "$owner_boot" = "$cur_boot" ]; then
+      local rec_pending cur_tier
+      rec_pending=$(grep "^RECOVERY_PENDING=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)
+      cur_tier=$(grep "^CURRENT_TIER=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)
+      if [ "$rec_pending" = "1" ] || { [ -n "$cur_tier" ] && [ "$cur_tier" -gt 0 ] 2>/dev/null; }; then
+        return 0
+      fi
+      local ap0 ap4 ap7 apgpu
+      ap0=$(grep "^APPLIED_P0=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)
+      ap4=$(grep "^APPLIED_P4=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)
+      ap7=$(grep "^APPLIED_P7=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)
+      apgpu=$(grep "^APPLIED_GPU=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)
+      for ap in "$ap0" "$ap4" "$ap7" "$apgpu"; do
+        case "$ap" in
+          ''|'NONE'|*[!0-9]*) ;;
+          *) return 0 ;;
+        esac
+      done
+    fi
+  fi
+
+  # In-memory check only applies if in-memory boot ID matches current boot
+  if [ "${IN_MEMORY_BOOT_ID:-}" = "$cur_boot" ]; then
+    if [ "${RECOVERY_PENDING:-0}" -eq 1 ] || { [ -n "$CURRENT_TIER" ] && [ "$CURRENT_TIER" -gt 0 ] 2>/dev/null; }; then
+      return 0
+    fi
+    for ap in "$APPLIED_P0" "$APPLIED_P4" "$APPLIED_P7" "$APPLIED_GPU"; do
+      case "$ap" in
+        ''|'NONE'|*[!0-9]*) ;;
+        *) return 0 ;;
+      esac
+    done
+  fi
+
+  return 1
+}
+
+# ── Baseline Integrity Validation (Disk & Memory) ──
+validate_baseline_integrity() {
+  local cur_boot
+  cur_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
+  if [ -z "$cur_boot" ] || [ "$cur_boot" = "unknown_boot" ]; then
+    return 1
+  fi
+
+  if [ -f "$BASELINE_FILE" ]; then
+    local b_boot b_p0 b_p4 b_p7 b_gpu
+    b_boot=$(grep "^BOOT_ID=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+    if [ "$b_boot" = "$cur_boot" ] && [ "$b_boot" != "unknown_boot" ]; then
+      b_p0=$(grep "^BASE_P0=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+      b_p4=$(grep "^BASE_P4=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+      b_p7=$(grep "^BASE_P7=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+      b_gpu=$(grep "^BASE_GPU=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+
+      if validate_baseline_value "$b_p0" && \
+         validate_baseline_value "$b_p4" && \
+         validate_baseline_value "$b_p7" && \
+         validate_baseline_value "$b_gpu"; then
+        BASE_P0="$b_p0"
+        BASE_P4="$b_p4"
+        BASE_P7="$b_p7"
+        BASE_GPU="$b_gpu"
+        BASELINE_VALID=1
+        return 0
+      fi
+    fi
+  fi
+
+  return 1
+}
+
+# ── Runtime Baseline Capture (Per-Boot Identity & Fail-Closed Guards) ──
 capture_baseline_frequencies() {
   local current_boot_id stored_boot_id
   current_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
 
+  if [ -z "$current_boot_id" ] || [ "$current_boot_id" = "unknown_boot" ]; then
+    command -v log >/dev/null 2>&1 && log "ERROR: Invalid boot ID; baseline capture aborted." "ERROR"
+    BASELINE_VALID=0
+    return 1
+  fi
+
   mkdir -p "$STATE_DIR" 2>/dev/null
 
-  # Verify existing baseline file against current boot UUID
-  if [ -f "$BASELINE_FILE" ]; then
-    stored_boot_id=$(grep "^BOOT_ID=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
-    if [ "$stored_boot_id" = "$current_boot_id" ] && [ "$stored_boot_id" != "unknown_boot" ]; then
-      . "$BASELINE_FILE"
-      if [ -n "$BASE_P0" ] && [ -n "$BASE_P4" ] && [ -n "$BASE_P7" ] && [ -n "$BASE_GPU" ]; then
-        command -v log >/dev/null 2>&1 && log "Loaded valid baseline for boot $current_boot_id: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU" "INFO"
-        return 0
-      fi
-    else
-      command -v log >/dev/null 2>&1 && log "Stale baseline file detected from different boot ($stored_boot_id vs $current_boot_id). Purging." "INFO"
-      rm -f "$BASELINE_FILE"
+  # Purge stale guard and ownership from older boots
+  if [ -f "$GUARD_FILE" ]; then
+    local guard_boot
+    guard_boot=$(grep "^BOOT_ID=" "$GUARD_FILE" 2>/dev/null | cut -d'"' -f2)
+    if [ "$guard_boot" != "$current_boot_id" ]; then
+      command -v log >/dev/null 2>&1 && log "Stale boot guard detected from older boot ($guard_boot vs $current_boot_id). Purging." "INFO"
+      rm -f "$GUARD_FILE" 2>/dev/null
     fi
   fi
 
-  # Double-sampling stability check
+  if [ "${IN_MEMORY_BOOT_ID:-}" != "$current_boot_id" ]; then
+    RECOVERY_PENDING=0
+    CURRENT_TIER=0
+    APPLIED_P0="NONE"; READBACK_P0="NONE"; STATUS_P0="BASELINE"
+    APPLIED_P4="NONE"; READBACK_P4="NONE"; STATUS_P4="BASELINE"
+    APPLIED_P7="NONE"; READBACK_P7="NONE"; STATUS_P7="BASELINE"
+    APPLIED_GPU="NONE"; READBACK_GPU="NONE"; STATUS_GPU="BASELINE"
+    IN_MEMORY_BOOT_ID="$current_boot_id"
+  fi
+  load_ownership_records
+
+  # 1. Verify existing baseline file against current boot UUID
+  if [ -f "$BASELINE_FILE" ]; then
+    stored_boot_id=$(grep "^BOOT_ID=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+    if [ "$stored_boot_id" = "$current_boot_id" ] && [ "$stored_boot_id" != "unknown_boot" ]; then
+      local f_p0 f_p4 f_p7 f_gpu
+      f_p0=$(grep "^BASE_P0=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+      f_p4=$(grep "^BASE_P4=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+      f_p7=$(grep "^BASE_P7=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+      f_gpu=$(grep "^BASE_GPU=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
+
+      if validate_baseline_value "$f_p0" && \
+         validate_baseline_value "$f_p4" && \
+         validate_baseline_value "$f_p7" && \
+         validate_baseline_value "$f_gpu"; then
+        BASE_P0="$f_p0"
+        BASE_P4="$f_p4"
+        BASE_P7="$f_p7"
+        BASE_GPU="$f_gpu"
+        BASELINE_VALID=1
+        write_boot_guard "$current_boot_id"
+        command -v log >/dev/null 2>&1 && log "Loaded and verified valid baseline for boot $current_boot_id: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU" "INFO"
+        return 0
+      else
+        command -v log >/dev/null 2>&1 && log "ERROR: Same-boot baseline file $BASELINE_FILE contains invalid frequencies (P0='$f_p0', P4='$f_p4', P7='$f_p7', GPU='$f_gpu'). Rejecting without silent overwrite." "ERROR"
+        BASELINE_VALID=0
+        return 1
+      fi
+    else
+      command -v log >/dev/null 2>&1 && log "Stale baseline file detected from different boot ($stored_boot_id vs $current_boot_id). Purging." "INFO"
+      rm -f "$BASELINE_FILE" 2>/dev/null
+    fi
+  fi
+
+  # 2. Check boot-scoped guard and active ownership: re-capture forbidden if already initialized this boot
+  if is_same_boot_guard_active "$current_boot_id"; then
+    command -v log >/dev/null 2>&1 && log "ERROR: Baseline capture refused: boot guard indicates baseline was already established during boot $current_boot_id. Re-capture forbidden to prevent capturing modified frequencies." "ERROR"
+    BASELINE_VALID=0
+    return 1
+  fi
+
+  if has_same_boot_active_ownership "$current_boot_id"; then
+    command -v log >/dev/null 2>&1 && log "ERROR: Baseline capture refused: active module ownership or recovery pending recorded for boot $current_boot_id. Re-capture forbidden." "ERROR"
+    BASELINE_VALID=0
+    return 1
+  fi
+
+  # 3. Double-sampling stability and validity check on actual hardware nodes
   local s1_p0 s1_p4 s1_p7 s1_gpu
   local s2_p0 s2_p4 s2_p7 s2_gpu
   s1_p0=$(cat "$CPU_P0_MAX" 2>/dev/null)
@@ -187,34 +389,79 @@ capture_baseline_frequencies() {
   s1_p7=$(cat "$CPU_P7_MAX" 2>/dev/null)
   s1_gpu=$(cat "$GPU_MAX_CLK" 2>/dev/null)
 
-  sleep 1
+  if ! validate_baseline_value "$s1_p0" || \
+     ! validate_baseline_value "$s1_p4" || \
+     ! validate_baseline_value "$s1_p7" || \
+     ! validate_baseline_value "$s1_gpu"; then
+    command -v log >/dev/null 2>&1 && log "ERROR: Initial frequency sample unreadable or invalid (P0='$s1_p0', P4='$s1_p4', P7='$s1_p7', GPU='$s1_gpu'). Baseline capture aborted." "WARN"
+    BASELINE_VALID=0
+    return 1
+  fi
+
+  if [ -n "$BASELINE_SAMPLE_DELAY" ] && [ "$BASELINE_SAMPLE_DELAY" != "0" ]; then
+    sleep "$BASELINE_SAMPLE_DELAY" 2>/dev/null || sleep 1
+  fi
 
   s2_p0=$(cat "$CPU_P0_MAX" 2>/dev/null)
   s2_p4=$(cat "$CPU_P4_MAX" 2>/dev/null)
   s2_p7=$(cat "$CPU_P7_MAX" 2>/dev/null)
   s2_gpu=$(cat "$GPU_MAX_CLK" 2>/dev/null)
 
-  if [ "$s1_p0" = "$s2_p0" ] && [ "$s1_p4" = "$s2_p4" ] && [ "$s1_p7" = "$s2_p7" ] && [ "$s1_gpu" = "$s2_gpu" ] && [ -n "$s1_p0" ]; then
-    BASE_P0="$s1_p0"
-    BASE_P4="$s1_p4"
-    BASE_P7="$s1_p7"
-    BASE_GPU="$s1_gpu"
+  if ! validate_baseline_value "$s2_p0" || \
+     ! validate_baseline_value "$s2_p4" || \
+     ! validate_baseline_value "$s2_p7" || \
+     ! validate_baseline_value "$s2_gpu"; then
+    command -v log >/dev/null 2>&1 && log "ERROR: Second frequency sample unreadable or invalid (P0='$s2_p0', P4='$s2_p4', P7='$s2_p7', GPU='$s2_gpu'). Baseline capture aborted." "WARN"
+    BASELINE_VALID=0
+    return 1
+  fi
 
-    local tmp_b="${BASELINE_FILE}.tmp.$$"
-    cat <<EOF > "$tmp_b"
+  if [ "$s1_p0" != "$s2_p0" ] || [ "$s1_p4" != "$s2_p4" ] || [ "$s1_p7" != "$s2_p7" ] || [ "$s1_gpu" != "$s2_gpu" ]; then
+    command -v log >/dev/null 2>&1 && log "ERROR: Frequency nodes unstable during baseline capture double-sampling (s1='$s1_p0 $s1_p4 $s1_p7 $s1_gpu', s2='$s2_p0 $s2_p4 $s2_p7 $s2_gpu'). Baseline capture aborted." "WARN"
+    BASELINE_VALID=0
+    return 1
+  fi
+
+  # All 4 samples valid and stable!
+  BASE_P0="$s1_p0"
+  BASE_P4="$s1_p4"
+  BASE_P7="$s1_p7"
+  BASE_GPU="$s1_gpu"
+
+  # 4. Atomic write of baseline file
+  local tmp_b="${BASELINE_FILE}.tmp.$$"
+  cat <<EOF > "$tmp_b" 2>/dev/null
 BOOT_ID="$current_boot_id"
 BASE_P0="$BASE_P0"
 BASE_P4="$BASE_P4"
 BASE_P7="$BASE_P7"
 BASE_GPU="$BASE_GPU"
 EOF
-    mv -f "$tmp_b" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp_b" 2>/dev/null
-    command -v log >/dev/null 2>&1 && log "Runtime baseline captured: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU (boot: $current_boot_id)" "INFO"
-    return 0
+  if [ ! -s "$tmp_b" ]; then
+    rm -f "$tmp_b" 2>/dev/null
+    command -v log >/dev/null 2>&1 && log "ERROR: Failed to write temporary baseline file $tmp_b." "ERROR"
+    BASELINE_VALID=0
+    return 1
   fi
 
-  command -v log >/dev/null 2>&1 && log "ERROR: Frequency nodes unstable or unreadable during baseline capture. Deferring." "WARN"
-  return 1
+  if ! mv -f "$tmp_b" "$BASELINE_FILE" 2>/dev/null; then
+    rm -f "$tmp_b" 2>/dev/null
+    command -v log >/dev/null 2>&1 && log "ERROR: Failed to move baseline file into place at $BASELINE_FILE." "ERROR"
+    BASELINE_VALID=0
+    return 1
+  fi
+
+  # 5. Atomic write of boot guard file
+  if ! write_boot_guard "$current_boot_id"; then
+    command -v log >/dev/null 2>&1 && log "ERROR: Failed to write boot guard file $GUARD_FILE. Purging baseline for consistency." "ERROR"
+    rm -f "$BASELINE_FILE" 2>/dev/null
+    BASELINE_VALID=0
+    return 1
+  fi
+
+  BASELINE_VALID=1
+  command -v log >/dev/null 2>&1 && log "Runtime baseline captured: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU (boot: $current_boot_id)" "INFO"
+  return 0
 }
 
 # ── Atomic Ownership Records Persistence ──
@@ -569,21 +816,20 @@ restore_hardware_baseline() {
   local cur_boot
   cur_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
 
+  load_ownership_records
+
+  # Strictly require valid baseline for current boot; NEVER call capture_baseline_frequencies() during restoration!
+  if ! validate_baseline_integrity; then
+    RECOVERY_PENDING=1
+    save_ownership_records
+    command -v log >/dev/null 2>&1 && log "ERROR: Cannot restore hardware baseline: baseline missing, invalid, or stale boot ID (reason: $reason). Zero sysfs writes performed; recovery remains pending." "ERROR"
+    return 1
+  fi
+
   local stored_boot=""
   if [ -f "$BASELINE_FILE" ]; then
     stored_boot=$(grep "^BOOT_ID=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)
   fi
-
-  if [ -z "$BASE_P0" ] || [ -z "$BASE_P4" ] || [ -z "$BASE_P7" ] || [ -z "$BASE_GPU" ]; then
-    capture_baseline_frequencies || {
-      command -v log >/dev/null 2>&1 && log "WARNING: Cannot restore hardware baseline: baseline capture unreadable." "WARN"
-      RECOVERY_PENDING=1
-      return 1
-    }
-    stored_boot="$cur_boot"
-  fi
-
-  load_ownership_records
 
   local res_p0 res_p4 res_p7 res_gpu
   res_p0=$(restore_single_node_baseline "CPU_P0" "$CPU_P0_MAX" "$BASE_P0" "$APPLIED_P0" "$cur_boot" "$stored_boot" "$STATUS_P0")

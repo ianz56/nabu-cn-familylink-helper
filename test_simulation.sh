@@ -55,8 +55,10 @@ export GPU_MAX_CLK="$TEST_DIR/gpu_max_clk"
 export STATE_DIR="$TEST_DIR/state"
 export BASELINE_FILE="$STATE_DIR/thermal_baseline.conf"
 export OWNERSHIP_FILE="$STATE_DIR/thermal_ownership.conf"
+export GUARD_FILE="$TEST_DIR/.thermal_boot_guard"
 export BACKLIGHT_SYSFS_PATH="$TEST_DIR/backlight_brightness"
 export THERMAL_SYSFS_DIR="$TEST_DIR/thermal"
+export BASELINE_SAMPLE_DELAY=0.01
 
 mkdir -p "$STATE_DIR" "$THERMAL_SYSFS_DIR"
 
@@ -929,6 +931,330 @@ echo "$$" > "$SCEN2_PID_FILE"
   production_cleanup_on_exit
 )
 assert_eq "Scenario 2: Idempotent cleanup removed PID file" "1" "$([ ! -f "$SCEN2_PID_FILE" ] && echo 1 || echo 0)"
+
+echo ""
+
+# ─────────────────────────────────────────────────────────────
+# 9. BOOT-SCOPED BASELINE INTEGRITY & FAIL-CLOSED RECOVERY (PHASE 11.7)
+# ─────────────────────────────────────────────────────────────
+echo "── 9. Boot-Scoped Baseline Integrity & Recovery Tests ──────"
+
+P117_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "boot-test-117")"
+
+# ── Case A: Valid existing same-boot baseline ──
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P117_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+rm -f "$GUARD_FILE" "$OWNERSHIP_FILE"
+
+# Change sysfs node values so we can detect if hardware was read
+echo "1111111" > "$CPU_P0_MAX"
+echo "2222222" > "$CPU_P4_MAX"
+echo "3333333" > "$CPU_P7_MAX"
+echo "4444444" > "$GPU_MAX_CLK"
+
+BASE_P0=""; BASE_P4=""; BASE_P7=""; BASE_GPU=""
+BASELINE_VALID=0
+
+capture_res=0
+capture_baseline_frequencies || capture_res=$?
+assert_eq "Case A: Valid existing same-boot baseline accepted" "0" "$capture_res"
+assert_eq "Case A: P0 baseline reused without hardware recapture" "1785600" "$BASE_P0"
+assert_eq "Case A: P4 baseline reused without hardware recapture" "2419200" "$BASE_P4"
+assert_eq "Case A: P7 baseline reused without hardware recapture" "2841600" "$BASE_P7"
+assert_eq "Case A: GPU baseline reused without hardware recapture" "675000000" "$BASE_GPU"
+assert_eq "Case A: Baseline marked valid" "1" "$BASELINE_VALID"
+assert_eq "Case A: Boot guard established" "1" "$([ -f "$GUARD_FILE" ] && echo 1 || echo 0)"
+
+# ── Case B: Same-boot baseline missing with active module ownership ──
+rm -f "$BASELINE_FILE" "$GUARD_FILE"
+echo "1920000" > "$CPU_P4_MAX"
+echo "1785600" > "$CPU_P0_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+
+cat <<EOF > "$OWNERSHIP_FILE"
+BOOT_ID="$P117_BOOT_ID"
+RECOVERY_PENDING="0"
+CURRENT_TIER="2"
+APPLIED_P0="NONE"
+READBACK_P0="NONE"
+STATUS_P0="BASELINE"
+APPLIED_P4="1920000"
+READBACK_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+APPLIED_P7="NONE"
+READBACK_P7="NONE"
+STATUS_P7="BASELINE"
+APPLIED_GPU="NONE"
+READBACK_GPU="NONE"
+STATUS_GPU="BASELINE"
+EOF
+
+BASE_P0=""; BASE_P4=""; BASE_P7=""; BASE_GPU=""
+BASELINE_VALID=0
+b_res=0
+capture_baseline_frequencies || b_res=$?
+assert_eq "Case B: Baseline capture rejected when active ownership exists" "1" "$b_res"
+assert_eq "Case B: Current frequency on P4 unchanged at 1920000" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case B: No baseline file created from capped value" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case B: BASELINE_VALID remains 0" "0" "$BASELINE_VALID"
+
+# ── Case C: Same-boot baseline missing after successful initialization ──
+rm -f "$BASELINE_FILE" "$OWNERSHIP_FILE"
+write_boot_guard "$P117_BOOT_ID"
+
+echo "1401600" > "$CPU_P4_MAX"
+c_res=0
+capture_baseline_frequencies || c_res=$?
+assert_eq "Case C: Re-capture rejected when boot guard is active" "1" "$c_res"
+assert_eq "Case C: No baseline file recreated" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case C: P4 node untouched" "1401600" "$(cat "$CPU_P4_MAX")"
+
+# ── Case D: Same-boot baseline contains invalid values ──
+for bad_val in "" "abc" "0" "-100" "00"; do
+  cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P117_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="$bad_val"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+  rm -f "$GUARD_FILE"
+  d_res=0
+  capture_baseline_frequencies || d_res=$?
+  assert_eq "Case D: Baseline with BASE_P4='$bad_val' rejected" "1" "$d_res"
+done
+
+for node_key in BASE_P0 BASE_P7 BASE_GPU; do
+  cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P117_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+  sed -i "s/^$node_key=.*/$node_key=\"0\"/" "$BASELINE_FILE"
+  rm -f "$GUARD_FILE"
+  d_res=0
+  capture_baseline_frequencies || d_res=$?
+  assert_eq "Case D: Baseline with $node_key='0' rejected" "1" "$d_res"
+done
+
+# ── Case E: Invalid or unstable sysfs samples ──
+rm -f "$BASELINE_FILE" "$GUARD_FILE" "$OWNERSHIP_FILE"
+
+# 1. Missing node
+echo "1785600" > "$CPU_P0_MAX"
+rm -f "$CPU_P4_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Missing sysfs node rejected" "1" "$e_res"
+assert_eq "Case E: No baseline file persisted on missing node" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+
+# 2. Empty node
+touch "$CPU_P4_MAX"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Empty sysfs node rejected" "1" "$e_res"
+
+# 3. Nonnumeric node
+echo "invalid_freq" > "$CPU_P4_MAX"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Nonnumeric sysfs node rejected" "1" "$e_res"
+
+# 4. Zero node
+echo "0" > "$CPU_P4_MAX"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Zero sysfs node rejected" "1" "$e_res"
+
+# 5. Unstable / changing frequency between samples
+echo "2419200" > "$CPU_P4_MAX"
+BASELINE_SAMPLE_DELAY=0.1
+( sleep 0.03; echo "1920000" > "$CPU_P4_MAX" ) &
+e_res=0
+capture_baseline_frequencies || e_res=$?
+BASELINE_SAMPLE_DELAY=0.01
+assert_eq "Case E: Changing frequency during double-sampling rejected" "1" "$e_res"
+assert_eq "Case E: No baseline persisted on unstable reading" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+
+# ── Case F: Genuine new-boot initialization ──
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="boot-ancient"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+
+cat <<EOF > "$GUARD_FILE"
+BOOT_ID="boot-ancient"
+STATUS="INITIALIZED"
+EOF
+
+cat <<EOF > "$OWNERSHIP_FILE"
+BOOT_ID="boot-ancient"
+RECOVERY_PENDING="1"
+CURRENT_TIER="3"
+APPLIED_P4="1401600"
+STATUS_P4="APPLIED_VERIFIED"
+EOF
+
+echo "1785600" > "$CPU_P0_MAX"
+echo "2419200" > "$CPU_P4_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+
+f_res=0
+capture_baseline_frequencies || f_res=$?
+assert_eq "Case F: Genuine new boot captures fresh baseline" "0" "$f_res"
+assert_eq "Case F: New baseline file written with current boot ID" "$P117_BOOT_ID" \
+  "$(grep "^BOOT_ID=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)"
+assert_eq "Case F: Boot guard updated to current boot ID" "$P117_BOOT_ID" \
+  "$(grep "^BOOT_ID=" "$GUARD_FILE" 2>/dev/null | cut -d'"' -f2)"
+
+# ── Case G: Restoration with missing or invalid baseline ──
+rm -f "$BASELINE_FILE"
+echo "1920000" > "$CPU_P4_MAX"
+APPLIED_P4="1920000"
+READBACK_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+CURRENT_TIER="2"
+RECOVERY_PENDING="0"
+save_ownership_records
+
+g_res=0
+restore_hardware_baseline "TEST_MISSING_BASELINE" || g_res=$?
+assert_eq "Case G: Restoration returns nonzero on missing baseline" "1" "$g_res"
+assert_eq "Case G: Zero sysfs writes (P4 remains 1920000)" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case G: RECOVERY_PENDING set to 1" "1" "$RECOVERY_PENDING"
+assert_eq "Case G: CURRENT_TIER preserved" "2" "$CURRENT_TIER"
+assert_eq "Case G: APPLIED_P4 ownership preserved" "1920000" "$APPLIED_P4"
+assert_eq "Case G: STATUS_P4 preserved" "APPLIED_VERIFIED" "$STATUS_P4"
+
+# ── Case H: Cleanup with missing baseline ──
+SCENARIO_H_DIR="$TEST_DIR/cleanup_case_h"
+mkdir -p "$SCENARIO_H_DIR"
+H_PID_FILE="$SCENARIO_H_DIR/daemon.pid"
+H_LOG_FILE="$SCENARIO_H_DIR/daemon.log"
+
+rm -f "$BASELINE_FILE"
+echo "1920000" > "$CPU_P4_MAX"
+APPLIED_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+CURRENT_TIER=2
+RECOVERY_PENDING=0
+save_ownership_records
+
+cat << DAEMON_SCRIPT_H > "$SCENARIO_H_DIR/run_daemon.sh"
+#!/bin/sh
+PID_FILE="$H_PID_FILE"
+LOG_FILE="$H_LOG_FILE"
+CPU_P0_MAX="$CPU_P0_MAX"
+CPU_P4_MAX="$CPU_P4_MAX"
+CPU_P7_MAX="$CPU_P7_MAX"
+GPU_MAX_CLK="$GPU_MAX_CLK"
+STATE_DIR="$STATE_DIR"
+BASELINE_FILE="$BASELINE_FILE"
+OWNERSHIP_FILE="$OWNERSHIP_FILE"
+GUARD_FILE="$GUARD_FILE"
+
+log() {
+  local msg="\$1"
+  local lvl="\${2:-INFO}"
+  echo "[\$lvl] \$msg" >> "\$LOG_FILE"
+}
+
+. "$LIB_DIR/thermal_engine.sh"
+. "$LIB_DIR/daemon_cleanup.sh"
+
+echo "\$\$" > "\$PID_FILE"
+setup_daemon_signals
+
+while true; do
+  sleep 0.1
+done
+DAEMON_SCRIPT_H
+
+sh "$SCENARIO_H_DIR/run_daemon.sh" &
+H_PID=$!
+
+wait_start=0
+while [ ! -f "$H_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
+  sleep 0.05
+  wait_start=$((wait_start + 1))
+done
+
+kill -TERM "$H_PID" 2>/dev/null
+wait_stop=0
+while kill -0 "$H_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
+  sleep 0.1
+  wait_stop=$((wait_stop + 1))
+done
+
+assert_eq "Case H: Daemon terminated without SIGKILL" "1" "$(kill -0 "$H_PID" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "Case H: Zero sysfs writes during cleanup with missing baseline" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case H: PID file unlinked after cleanup" "1" "$([ ! -f "$H_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case H: Log records CLEANUP_RECOVERY_PENDING" "1" "$(grep -q "CLEANUP_RECOVERY_PENDING" "$H_LOG_FILE" && echo 1 || echo 0)"
+assert_eq "Case H: Log does NOT contain CLEANUP_SUCCESS" "0" "$(grep -q "CLEANUP_SUCCESS" "$H_LOG_FILE" && echo 1 || echo 0)"
+
+# ── Case I: Thermal enforcement with invalid baseline & lifecycle availability ──
+rm -f "$BASELINE_FILE"
+echo "2419200" > "$CPU_P4_MAX"
+BASELINE_VALID=0
+CURRENT_TIER=0
+
+# Sourced directly from production auto_switch.sh
+eval "$(sed -n '/^apply_adaptive_thermal()/,/^}/p' "$SCRIPT_DIR/auto_switch.sh")"
+
+THERMAL_ENABLED=1
+THERMAL_ZONE_PATH="$MOCK_THERMAL_DIR/thermal_zone0"
+echo "45000" > "$MOCK_THERMAL_DIR/thermal_zone0/temp"
+
+(
+  apply_adaptive_thermal
+)
+assert_eq "Case I: apply_adaptive_thermal performed zero sysfs writes with invalid baseline" \
+  "2419200" "$(cat "$CPU_P4_MAX")"
+
+# Verify multi-user lifecycle management remains available
+MOCK_USER_LIST="UserInfo{0:Main User:413} id=0 name=Main User type=android.os.usertype.full.SYSTEM flags=ADMIN|PRIMARY (running) (current)
+UserInfo{10:Delia:10} id=10 name=Delia type=android.os.usertype.full.SECONDARY flags=0 (running)"
+reset_mock_calls
+MOCK_STOPPED_STATE="false"
+MOCK_STARTED_STATE="RUNNING_UNLOCKED"
+MOCK_CURRENT_USER=0
+MOCK_DISP_OFF=1
+
+cmd() {
+  if [ "$1" = "activity" ]; then
+    case "$2" in
+      is-user-stopped) echo "$MOCK_STOPPED_STATE"; return 0 ;;
+      get-started-user-state) echo "$MOCK_STARTED_STATE"; return 0 ;;
+      get-current-user) echo "0"; return 0 ;;
+      stop-user)
+        echo "1" >> "$MOCK_STOP_CALLS_FILE"
+        MOCK_STOPPED_STATE="true"
+        MOCK_STARTED_STATE="User is not started"
+        return 0
+        ;;
+    esac
+  elif [ "$1" = "user" ]; then
+    echo "$MOCK_USER_LIST"; return 0
+  fi
+}
+
+res=$(execute_scenario_b_user_stop 10 5)
+assert_eq "Case I: Scenario B user stop succeeds even if thermal baseline invalid" "STOP_SUCCESS" "$res"
+assert_eq "Case I: Target user 10 stop requested exactly once" "1" "$(get_mock_stop_calls)"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

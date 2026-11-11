@@ -55,8 +55,10 @@ export GPU_MAX_CLK="$TEST_DIR/gpu_max_clk"
 export STATE_DIR="$TEST_DIR/state"
 export BASELINE_FILE="$STATE_DIR/thermal_baseline.conf"
 export OWNERSHIP_FILE="$STATE_DIR/thermal_ownership.conf"
+export GUARD_FILE="$TEST_DIR/.thermal_boot_guard"
 export BACKLIGHT_SYSFS_PATH="$TEST_DIR/backlight_brightness"
 export THERMAL_SYSFS_DIR="$TEST_DIR/thermal"
+export BASELINE_SAMPLE_DELAY=0.01
 
 mkdir -p "$STATE_DIR" "$THERMAL_SYSFS_DIR"
 
@@ -580,11 +582,48 @@ assert_eq "Initial write clamped below target: APPLIED remains NONE" "VENDOR_LOW
 res=$(apply_single_node_limit "CPU_P4" "$MOCK_CLAMP_FILE" 2131200 2419200 "NONE" "boot-1" "boot-1")
 assert_eq "Subsequent tier change preserves vendor clamp: APPLIED remains NONE" "VENDOR_LOWER_PRESERVED NONE 1056000" "$res"
 
-# 8. Restore operation after a clamped apply
+# 8. Regression Tests A through F for Single-Node Baseline Restoration
+# Test A — Unowned vendor clamp
+echo "1056000" > "$MOCK_CLAMP_FILE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_CLAMP_FILE" 2419200 "NONE" "boot-1" "boot-1" "VENDOR_CLAMPED")
+readback=$(cat "$MOCK_CLAMP_FILE")
+assert_eq "Test A: Unowned vendor clamp returns SAFE_EXTERNAL_LIMIT_PRESERVED" "SAFE_EXTERNAL_LIMIT_PRESERVED 1056000" "$res"
+assert_eq "Test A: No write to node; readback remains 1056000" "1056000" "$readback"
+
+# Test B — Unowned preserved lower limit
+echo "1612800" > "$MOCK_CLAMP_FILE"
 res=$(restore_single_node_baseline "CPU_P4" "$MOCK_CLAMP_FILE" 2419200 "NONE" "boot-1" "boot-1" "VENDOR_LOWER_PRESERVED")
 readback=$(cat "$MOCK_CLAMP_FILE")
-assert_eq "Restore after clamped apply attempts restore to baseline" "RESTORED_VERIFIED 2419200" "$res"
-assert_eq "Node restored to baseline" "2419200" "$readback"
+assert_eq "Test B: Unowned lower limit returns SAFE_EXTERNAL_LIMIT_PRESERVED" "SAFE_EXTERNAL_LIMIT_PRESERVED 1612800" "$res"
+assert_eq "Test B: Current value remains unchanged at 1612800" "1612800" "$readback"
+
+# Test C — Positively owned module cap
+echo "2131200" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 2131200 "boot-1" "boot-1" "APPLIED_VERIFIED")
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test C: Positively owned cap permits baseline restore" "RESTORED_VERIFIED 2419200" "$res"
+assert_eq "Test C: Node restored to baseline 2419200" "2419200" "$readback"
+
+# Test D — External clamp below module-owned cap
+echo "1612800" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 2131200 "boot-1" "boot-1" "APPLIED_VERIFIED")
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test D: External clamp below module cap preserved" "SAFE_EXTERNAL_LIMIT_PRESERVED 1612800" "$res"
+assert_eq "Test D: Current value unchanged at 1612800" "1612800" "$readback"
+
+# Test E — External controller returns node to baseline
+echo "2419200" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 "NONE" "boot-1" "boot-1" "VENDOR_CLAMPED")
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test E: External controller return to baseline returns ALREADY_BASELINE" "ALREADY_BASELINE 2419200" "$res"
+assert_eq "Test E: Node remains at baseline 2419200 without write" "2419200" "$readback"
+
+# Test F — Unowned unrelated value
+echo "2208000" > "$MOCK_NODE"
+res=$(restore_single_node_baseline "CPU_P4" "$MOCK_NODE" 2419200 "NONE" "boot-1" "boot-1" "BASELINE" || true)
+readback=$(cat "$MOCK_NODE")
+assert_eq "Test F: Unowned unrelated value returns OWNERSHIP_UNCERTAIN" "OWNERSHIP_UNCERTAIN 2208000" "$res"
+assert_eq "Test F: Node remains 2208000 without write" "2208000" "$readback"
 
 # 9. External controller sets an unrelated value without module involvement
 echo "2208000" > "$MOCK_NODE"
@@ -697,23 +736,61 @@ assert_eq "Daemon restart reloads CURRENT_TIER" "3" "$CURRENT_TIER"
 assert_eq "Daemon restart reloads APPLIED_P4" "1612800" "$APPLIED_P4"
 assert_eq "Daemon restart reloads STATUS_P4" "APPLIED_VERIFIED" "$STATUS_P4"
 
+# Test G — Four-node aggregation
+# Combine:
+# - One fully restored CPU cluster (P0: cur=1632000, APPLIED=1632000, base=1785600 -> RESTORED_VERIFIED)
+# - One safe vendor-limited cluster (P4: cur=1056000, APPLIED=NONE, STATUS=VENDOR_CLAMPED -> SAFE_EXTERNAL_LIMIT_PRESERVED)
+# - One unrelated uncertain cluster (P7: cur=2208000, APPLIED=NONE, STATUS=BASELINE -> OWNERSHIP_UNCERTAIN)
+# - One fully restored GPU node (GPU: cur=499200000, APPLIED=499200000, base=675000000 -> RESTORED_VERIFIED)
+echo "1632000" > "$CPU_P0_MAX"
+echo "1056000" > "$CPU_P4_MAX"
+echo "2208000" > "$CPU_P7_MAX"
+echo "499200000" > "$GPU_MAX_CLK"
+
+APPLIED_P0="1632000"; APPLIED_P4="NONE"; APPLIED_P7="NONE"; APPLIED_GPU="499200000"
+STATUS_P0="APPLIED_VERIFIED"; STATUS_P4="VENDOR_CLAMPED"; STATUS_P7="BASELINE"; STATUS_GPU="APPLIED_VERIFIED"
+save_ownership_records
+
+agg_rc=0
+restore_hardware_baseline "TEST_FOUR_NODE_AGGREGATION" || agg_rc=$?
+
+assert_eq "Test G: Aggregate return code indicates incomplete restore" "1" "$agg_rc"
+assert_eq "Test G: Aggregate recovery pending is set" "1" "$RECOVERY_PENDING"
+assert_eq "Test G: P0 restored to baseline" "$BASE_P0" "$(cat "$CPU_P0_MAX")"
+assert_eq "Test G: P4 vendor clamp preserved" "1056000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Test G: P7 uncertain node untouched" "2208000" "$(cat "$CPU_P7_MAX")"
+assert_eq "Test G: GPU restored to baseline" "$BASE_GPU" "$(cat "$GPU_MAX_CLK")"
+
 echo ""
 
 # ─────────────────────────────────────────────────────────────
-# 8. PRODUCTION CLEANUP INTEGRATION TEST (lib/daemon_cleanup.sh)
+# 8. PRODUCTION CLEANUP INTEGRATION TESTS (lib/daemon_cleanup.sh)
 # ─────────────────────────────────────────────────────────────
-echo "── 8. Production Cleanup Integration Test ──────────────────"
+echo "── 8. Production Cleanup Integration Tests ─────────────────"
 
-SHUTDOWN_TEST_DIR="$TEST_DIR/shutdown_test"
-mkdir -p "$SHUTDOWN_TEST_DIR"
-TEST_PID_FILE="$SHUTDOWN_TEST_DIR/daemon.pid"
-TEST_LOG_FILE="$SHUTDOWN_TEST_DIR/daemon.log"
+# ── Scenario 1: Complete Restoration ──
+# Module-owned mock cap, successful restore, PID removed, log reports success, no recovery pending.
+SCENARIO1_DIR="$TEST_DIR/cleanup_scenario1"
+mkdir -p "$SCENARIO1_DIR"
+SCEN1_PID_FILE="$SCENARIO1_DIR/daemon.pid"
+SCEN1_LOG_FILE="$SCENARIO1_DIR/daemon.log"
 
-# Prepare test daemon script that sources real production libraries
-cat << DAEMON_SCRIPT > "$SHUTDOWN_TEST_DIR/run_daemon.sh"
+# Reset hardware nodes to baseline except P4 which has a module-owned cap
+echo "$BASE_P0" > "$CPU_P0_MAX"
+echo "1920000" > "$CPU_P4_MAX"
+echo "$BASE_P7" > "$CPU_P7_MAX"
+echo "$BASE_GPU" > "$GPU_MAX_CLK"
+
+APPLIED_P0="NONE"; APPLIED_P4="1920000"; APPLIED_P7="NONE"; APPLIED_GPU="NONE"
+STATUS_P0="BASELINE"; STATUS_P4="APPLIED_VERIFIED"; STATUS_P7="BASELINE"; STATUS_GPU="BASELINE"
+CURRENT_TIER=1
+RECOVERY_PENDING=0
+save_ownership_records
+
+cat << DAEMON_SCRIPT1 > "$SCENARIO1_DIR/run_daemon.sh"
 #!/bin/sh
-PID_FILE="$TEST_PID_FILE"
-LOG_FILE="$TEST_LOG_FILE"
+PID_FILE="$SCEN1_PID_FILE"
+LOG_FILE="$SCEN1_LOG_FILE"
 CPU_P0_MAX="$CPU_P0_MAX"
 CPU_P4_MAX="$CPU_P4_MAX"
 CPU_P7_MAX="$CPU_P7_MAX"
@@ -726,56 +803,458 @@ BASE_P4="$BASE_P4"
 BASE_P7="$BASE_P7"
 BASE_GPU="$BASE_GPU"
 
+log() {
+  local msg="\$1"
+  local lvl="\${2:-INFO}"
+  echo "[\$lvl] \$msg" >> "\$LOG_FILE"
+}
+
 . "$LIB_DIR/thermal_engine.sh"
 . "$LIB_DIR/daemon_cleanup.sh"
 
 echo "\$\$" > "\$PID_FILE"
 setup_daemon_signals
 
-# Set a throttled state to verify restoration on shutdown
-echo "1920000" > "$CPU_P4_MAX"
-APPLIED_P4="1920000"
-STATUS_P4="APPLIED_VERIFIED"
-save_ownership_records
-
 while true; do
   sleep 0.1
 done
-DAEMON_SCRIPT
+DAEMON_SCRIPT1
 
-sh "$SHUTDOWN_TEST_DIR/run_daemon.sh" &
-DAEMON_PID=$!
+sh "$SCENARIO1_DIR/run_daemon.sh" &
+SCEN1_PID=$!
 
 wait_start=0
-while [ ! -f "$TEST_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
+while [ ! -f "$SCEN1_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
   sleep 0.05
   wait_start=$((wait_start + 1))
 done
 
-assert_eq "Production daemon spawned" "1" "$(kill -0 "$DAEMON_PID" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "Scenario 1: Daemon process spawned" "1" "$(kill -0 "$SCEN1_PID" 2>/dev/null && echo 1 || echo 0)"
 
 # Send SIGTERM to invoke production cleanup
-kill -TERM "$DAEMON_PID" 2>/dev/null
+kill -TERM "$SCEN1_PID" 2>/dev/null
 
 wait_stop=0
-while kill -0 "$DAEMON_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
+while kill -0 "$SCEN1_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
   sleep 0.1
   wait_stop=$((wait_stop + 1))
 done
 
-assert_eq "Production daemon terminated on SIGTERM" "1" "$(kill -0 "$DAEMON_PID" 2>/dev/null && echo 0 || echo 1)"
-assert_eq "Production cleanup restored P4 node to baseline" "$BASE_P4" "$(cat "$CPU_P4_MAX")"
-assert_eq "Production cleanup unlinked PID file" "1" "$([ ! -f "$TEST_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 1: Daemon terminated cleanly on SIGTERM" "1" "$(kill -0 "$SCEN1_PID" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "Scenario 1: Hardware node P4 restored to baseline" "$BASE_P4" "$(cat "$CPU_P4_MAX")"
+assert_eq "Scenario 1: PID file unlinked after restoration" "1" "$([ ! -f "$SCEN1_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 1: Log records CLEANUP_SUCCESS" "1" "$(grep -q "CLEANUP_SUCCESS" "$SCEN1_LOG_FILE" && echo 1 || echo 0)"
+assert_eq "Scenario 1: Log does NOT contain CLEANUP_RECOVERY_PENDING" "0" "$(grep -q "CLEANUP_RECOVERY_PENDING" "$SCEN1_LOG_FILE" && echo 1 || echo 0)"
 
-# Verify Idempotency of production_cleanup_on_exit
+# ── Scenario 2: Partial Restoration / Recovery Pending ──
+# Node P4 is ownership-uncertain, cleanup logs CLEANUP_RECOVERY_PENDING, no CLEANUP_SUCCESS, PID file removed after attempt, idempotent.
+SCENARIO2_DIR="$TEST_DIR/cleanup_scenario2"
+mkdir -p "$SCENARIO2_DIR"
+SCEN2_PID_FILE="$SCENARIO2_DIR/daemon.pid"
+SCEN2_LOG_FILE="$SCENARIO2_DIR/daemon.log"
+
+echo "$BASE_P0" > "$CPU_P0_MAX"
+echo "2208000" > "$CPU_P4_MAX"
+echo "$BASE_P7" > "$CPU_P7_MAX"
+echo "$BASE_GPU" > "$GPU_MAX_CLK"
+
+APPLIED_P0="NONE"; APPLIED_P4="NONE"; APPLIED_P7="NONE"; APPLIED_GPU="NONE"
+STATUS_P0="BASELINE"; STATUS_P4="BASELINE"; STATUS_P7="BASELINE"; STATUS_GPU="BASELINE"
+CURRENT_TIER=2
+RECOVERY_PENDING=0
+save_ownership_records
+
+cat << DAEMON_SCRIPT2 > "$SCENARIO2_DIR/run_daemon.sh"
+#!/bin/sh
+PID_FILE="$SCEN2_PID_FILE"
+LOG_FILE="$SCEN2_LOG_FILE"
+CPU_P0_MAX="$CPU_P0_MAX"
+CPU_P4_MAX="$CPU_P4_MAX"
+CPU_P7_MAX="$CPU_P7_MAX"
+GPU_MAX_CLK="$GPU_MAX_CLK"
+STATE_DIR="$STATE_DIR"
+BASELINE_FILE="$BASELINE_FILE"
+OWNERSHIP_FILE="$OWNERSHIP_FILE"
+BASE_P0="$BASE_P0"
+BASE_P4="$BASE_P4"
+BASE_P7="$BASE_P7"
+BASE_GPU="$BASE_GPU"
+
+log() {
+  local msg="\$1"
+  local lvl="\${2:-INFO}"
+  echo "[\$lvl] \$msg" >> "\$LOG_FILE"
+}
+
+. "$LIB_DIR/thermal_engine.sh"
+. "$LIB_DIR/daemon_cleanup.sh"
+
+echo "\$\$" > "\$PID_FILE"
+setup_daemon_signals
+
+while true; do
+  sleep 0.1
+done
+DAEMON_SCRIPT2
+
+sh "$SCENARIO2_DIR/run_daemon.sh" &
+SCEN2_PID=$!
+
+wait_start=0
+while [ ! -f "$SCEN2_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
+  sleep 0.05
+  wait_start=$((wait_start + 1))
+done
+
+assert_eq "Scenario 2: Daemon process spawned" "1" "$(kill -0 "$SCEN2_PID" 2>/dev/null && echo 1 || echo 0)"
+
+# Send SIGTERM to invoke production cleanup
+kill -TERM "$SCEN2_PID" 2>/dev/null
+
+wait_stop=0
+while kill -0 "$SCEN2_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
+  sleep 0.1
+  wait_stop=$((wait_stop + 1))
+done
+
+assert_eq "Scenario 2: Daemon terminated cleanly on SIGTERM without SIGKILL" "1" "$(kill -0 "$SCEN2_PID" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "Scenario 2: Uncertain node P4 NOT overwritten (remains 2208000)" "2208000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Scenario 2: PID file unlinked after cleanup attempt" "1" "$([ ! -f "$SCEN2_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 2: Log records CLEANUP_RECOVERY_PENDING" "1" "$(grep -q "CLEANUP_RECOVERY_PENDING" "$SCEN2_LOG_FILE" && echo 1 || echo 0)"
+assert_eq "Scenario 2: Log does NOT contain CLEANUP_SUCCESS" "0" "$(grep -q "CLEANUP_SUCCESS" "$SCEN2_LOG_FILE" && echo 1 || echo 0)"
+
+# Scenario 2 Idempotency: Calling production_cleanup_on_exit again does not fail
 CLEANUP_RUNNING=0
-PID_FILE="$TEST_PID_FILE"
-echo "$$" > "$TEST_PID_FILE"
+PID_FILE="$SCEN2_PID_FILE"
+echo "$$" > "$SCEN2_PID_FILE"
 (
-  # Run in subshell to test exit behavior
   production_cleanup_on_exit
 )
-assert_eq "Idempotent cleanup removed PID file" "1" "$([ ! -f "$TEST_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Scenario 2: Idempotent cleanup removed PID file" "1" "$([ ! -f "$SCEN2_PID_FILE" ] && echo 1 || echo 0)"
+
+echo ""
+
+# ─────────────────────────────────────────────────────────────
+# 9. BOOT-SCOPED BASELINE INTEGRITY & FAIL-CLOSED RECOVERY (PHASE 11.7)
+# ─────────────────────────────────────────────────────────────
+echo "── 9. Boot-Scoped Baseline Integrity & Recovery Tests ──────"
+
+P117_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "boot-test-117")"
+
+# ── Case A: Valid existing same-boot baseline ──
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P117_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+rm -f "$GUARD_FILE" "$OWNERSHIP_FILE"
+
+# Change sysfs node values so we can detect if hardware was read
+echo "1111111" > "$CPU_P0_MAX"
+echo "2222222" > "$CPU_P4_MAX"
+echo "3333333" > "$CPU_P7_MAX"
+echo "4444444" > "$GPU_MAX_CLK"
+
+BASE_P0=""; BASE_P4=""; BASE_P7=""; BASE_GPU=""
+BASELINE_VALID=0
+
+capture_res=0
+capture_baseline_frequencies || capture_res=$?
+assert_eq "Case A: Valid existing same-boot baseline accepted" "0" "$capture_res"
+assert_eq "Case A: P0 baseline reused without hardware recapture" "1785600" "$BASE_P0"
+assert_eq "Case A: P4 baseline reused without hardware recapture" "2419200" "$BASE_P4"
+assert_eq "Case A: P7 baseline reused without hardware recapture" "2841600" "$BASE_P7"
+assert_eq "Case A: GPU baseline reused without hardware recapture" "675000000" "$BASE_GPU"
+assert_eq "Case A: Baseline marked valid" "1" "$BASELINE_VALID"
+assert_eq "Case A: Boot guard established" "1" "$([ -f "$GUARD_FILE" ] && echo 1 || echo 0)"
+
+# ── Case B: Same-boot baseline missing with active module ownership ──
+rm -f "$BASELINE_FILE" "$GUARD_FILE"
+echo "1920000" > "$CPU_P4_MAX"
+echo "1785600" > "$CPU_P0_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+
+cat <<EOF > "$OWNERSHIP_FILE"
+BOOT_ID="$P117_BOOT_ID"
+RECOVERY_PENDING="0"
+CURRENT_TIER="2"
+APPLIED_P0="NONE"
+READBACK_P0="NONE"
+STATUS_P0="BASELINE"
+APPLIED_P4="1920000"
+READBACK_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+APPLIED_P7="NONE"
+READBACK_P7="NONE"
+STATUS_P7="BASELINE"
+APPLIED_GPU="NONE"
+READBACK_GPU="NONE"
+STATUS_GPU="BASELINE"
+EOF
+
+BASE_P0=""; BASE_P4=""; BASE_P7=""; BASE_GPU=""
+BASELINE_VALID=0
+b_res=0
+capture_baseline_frequencies || b_res=$?
+assert_eq "Case B: Baseline capture rejected when active ownership exists" "1" "$b_res"
+assert_eq "Case B: Current frequency on P4 unchanged at 1920000" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case B: No baseline file created from capped value" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case B: BASELINE_VALID remains 0" "0" "$BASELINE_VALID"
+
+# ── Case C: Same-boot baseline missing after successful initialization ──
+rm -f "$BASELINE_FILE" "$OWNERSHIP_FILE"
+write_boot_guard "$P117_BOOT_ID"
+
+echo "1401600" > "$CPU_P4_MAX"
+c_res=0
+capture_baseline_frequencies || c_res=$?
+assert_eq "Case C: Re-capture rejected when boot guard is active" "1" "$c_res"
+assert_eq "Case C: No baseline file recreated" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case C: P4 node untouched" "1401600" "$(cat "$CPU_P4_MAX")"
+
+# ── Case D: Same-boot baseline contains invalid values ──
+for bad_val in "" "abc" "0" "-100" "00"; do
+  cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P117_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="$bad_val"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+  rm -f "$GUARD_FILE"
+  d_res=0
+  capture_baseline_frequencies || d_res=$?
+  assert_eq "Case D: Baseline with BASE_P4='$bad_val' rejected" "1" "$d_res"
+done
+
+for node_key in BASE_P0 BASE_P7 BASE_GPU; do
+  cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P117_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+  sed -i "s/^$node_key=.*/$node_key=\"0\"/" "$BASELINE_FILE"
+  rm -f "$GUARD_FILE"
+  d_res=0
+  capture_baseline_frequencies || d_res=$?
+  assert_eq "Case D: Baseline with $node_key='0' rejected" "1" "$d_res"
+done
+
+# ── Case E: Invalid or unstable sysfs samples ──
+rm -f "$BASELINE_FILE" "$GUARD_FILE" "$OWNERSHIP_FILE"
+
+# 1. Missing node
+echo "1785600" > "$CPU_P0_MAX"
+rm -f "$CPU_P4_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Missing sysfs node rejected" "1" "$e_res"
+assert_eq "Case E: No baseline file persisted on missing node" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+
+# 2. Empty node
+touch "$CPU_P4_MAX"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Empty sysfs node rejected" "1" "$e_res"
+
+# 3. Nonnumeric node
+echo "invalid_freq" > "$CPU_P4_MAX"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Nonnumeric sysfs node rejected" "1" "$e_res"
+
+# 4. Zero node
+echo "0" > "$CPU_P4_MAX"
+e_res=0
+capture_baseline_frequencies || e_res=$?
+assert_eq "Case E: Zero sysfs node rejected" "1" "$e_res"
+
+# 5. Unstable / changing frequency between samples
+echo "2419200" > "$CPU_P4_MAX"
+BASELINE_SAMPLE_DELAY=0.1
+( sleep 0.03; echo "1920000" > "$CPU_P4_MAX" ) &
+e_res=0
+capture_baseline_frequencies || e_res=$?
+BASELINE_SAMPLE_DELAY=0.01
+assert_eq "Case E: Changing frequency during double-sampling rejected" "1" "$e_res"
+assert_eq "Case E: No baseline persisted on unstable reading" "0" "$([ -f "$BASELINE_FILE" ] && echo 1 || echo 0)"
+
+# ── Case F: Genuine new-boot initialization ──
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="boot-ancient"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+
+cat <<EOF > "$GUARD_FILE"
+BOOT_ID="boot-ancient"
+STATUS="INITIALIZED"
+EOF
+
+cat <<EOF > "$OWNERSHIP_FILE"
+BOOT_ID="boot-ancient"
+RECOVERY_PENDING="1"
+CURRENT_TIER="3"
+APPLIED_P4="1401600"
+STATUS_P4="APPLIED_VERIFIED"
+EOF
+
+echo "1785600" > "$CPU_P0_MAX"
+echo "2419200" > "$CPU_P4_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+
+f_res=0
+capture_baseline_frequencies || f_res=$?
+assert_eq "Case F: Genuine new boot captures fresh baseline" "0" "$f_res"
+assert_eq "Case F: New baseline file written with current boot ID" "$P117_BOOT_ID" \
+  "$(grep "^BOOT_ID=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)"
+assert_eq "Case F: Boot guard updated to current boot ID" "$P117_BOOT_ID" \
+  "$(grep "^BOOT_ID=" "$GUARD_FILE" 2>/dev/null | cut -d'"' -f2)"
+
+# ── Case G: Restoration with missing or invalid baseline ──
+rm -f "$BASELINE_FILE"
+echo "1920000" > "$CPU_P4_MAX"
+APPLIED_P4="1920000"
+READBACK_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+CURRENT_TIER="2"
+RECOVERY_PENDING="0"
+save_ownership_records
+
+g_res=0
+restore_hardware_baseline "TEST_MISSING_BASELINE" || g_res=$?
+assert_eq "Case G: Restoration returns nonzero on missing baseline" "1" "$g_res"
+assert_eq "Case G: Zero sysfs writes (P4 remains 1920000)" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case G: RECOVERY_PENDING set to 1" "1" "$RECOVERY_PENDING"
+assert_eq "Case G: CURRENT_TIER preserved" "2" "$CURRENT_TIER"
+assert_eq "Case G: APPLIED_P4 ownership preserved" "1920000" "$APPLIED_P4"
+assert_eq "Case G: STATUS_P4 preserved" "APPLIED_VERIFIED" "$STATUS_P4"
+
+# ── Case H: Cleanup with missing baseline ──
+SCENARIO_H_DIR="$TEST_DIR/cleanup_case_h"
+mkdir -p "$SCENARIO_H_DIR"
+H_PID_FILE="$SCENARIO_H_DIR/daemon.pid"
+H_LOG_FILE="$SCENARIO_H_DIR/daemon.log"
+
+rm -f "$BASELINE_FILE"
+echo "1920000" > "$CPU_P4_MAX"
+APPLIED_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+CURRENT_TIER=2
+RECOVERY_PENDING=0
+save_ownership_records
+
+cat << DAEMON_SCRIPT_H > "$SCENARIO_H_DIR/run_daemon.sh"
+#!/bin/sh
+PID_FILE="$H_PID_FILE"
+LOG_FILE="$H_LOG_FILE"
+CPU_P0_MAX="$CPU_P0_MAX"
+CPU_P4_MAX="$CPU_P4_MAX"
+CPU_P7_MAX="$CPU_P7_MAX"
+GPU_MAX_CLK="$GPU_MAX_CLK"
+STATE_DIR="$STATE_DIR"
+BASELINE_FILE="$BASELINE_FILE"
+OWNERSHIP_FILE="$OWNERSHIP_FILE"
+GUARD_FILE="$GUARD_FILE"
+
+log() {
+  local msg="\$1"
+  local lvl="\${2:-INFO}"
+  echo "[\$lvl] \$msg" >> "\$LOG_FILE"
+}
+
+. "$LIB_DIR/thermal_engine.sh"
+. "$LIB_DIR/daemon_cleanup.sh"
+
+echo "\$\$" > "\$PID_FILE"
+setup_daemon_signals
+
+while true; do
+  sleep 0.1
+done
+DAEMON_SCRIPT_H
+
+sh "$SCENARIO_H_DIR/run_daemon.sh" &
+H_PID=$!
+
+wait_start=0
+while [ ! -f "$H_PID_FILE" ] && [ "$wait_start" -lt 20 ]; do
+  sleep 0.05
+  wait_start=$((wait_start + 1))
+done
+
+kill -TERM "$H_PID" 2>/dev/null
+wait_stop=0
+while kill -0 "$H_PID" 2>/dev/null && [ "$wait_stop" -lt 30 ]; do
+  sleep 0.1
+  wait_stop=$((wait_stop + 1))
+done
+
+assert_eq "Case H: Daemon terminated without SIGKILL" "1" "$(kill -0 "$H_PID" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "Case H: Zero sysfs writes during cleanup with missing baseline" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case H: PID file unlinked after cleanup" "1" "$([ ! -f "$H_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case H: Log records CLEANUP_RECOVERY_PENDING" "1" "$(grep -q "CLEANUP_RECOVERY_PENDING" "$H_LOG_FILE" && echo 1 || echo 0)"
+assert_eq "Case H: Log does NOT contain CLEANUP_SUCCESS" "0" "$(grep -q "CLEANUP_SUCCESS" "$H_LOG_FILE" && echo 1 || echo 0)"
+
+# ── Case I: Thermal enforcement with invalid baseline & lifecycle availability ──
+rm -f "$BASELINE_FILE"
+echo "2419200" > "$CPU_P4_MAX"
+BASELINE_VALID=0
+CURRENT_TIER=0
+
+# Sourced directly from production auto_switch.sh
+eval "$(sed -n '/^apply_adaptive_thermal()/,/^}/p' "$SCRIPT_DIR/auto_switch.sh")"
+
+THERMAL_ENABLED=1
+THERMAL_ZONE_PATH="$MOCK_THERMAL_DIR/thermal_zone0"
+echo "45000" > "$MOCK_THERMAL_DIR/thermal_zone0/temp"
+
+(
+  apply_adaptive_thermal
+)
+assert_eq "Case I: apply_adaptive_thermal performed zero sysfs writes with invalid baseline" \
+  "2419200" "$(cat "$CPU_P4_MAX")"
+
+# Verify multi-user lifecycle management remains available
+MOCK_USER_LIST="UserInfo{0:Main User:413} id=0 name=Main User type=android.os.usertype.full.SYSTEM flags=ADMIN|PRIMARY (running) (current)
+UserInfo{10:Delia:10} id=10 name=Delia type=android.os.usertype.full.SECONDARY flags=0 (running)"
+reset_mock_calls
+MOCK_STOPPED_STATE="false"
+MOCK_STARTED_STATE="RUNNING_UNLOCKED"
+MOCK_CURRENT_USER=0
+MOCK_DISP_OFF=1
+
+cmd() {
+  if [ "$1" = "activity" ]; then
+    case "$2" in
+      is-user-stopped) echo "$MOCK_STOPPED_STATE"; return 0 ;;
+      get-started-user-state) echo "$MOCK_STARTED_STATE"; return 0 ;;
+      get-current-user) echo "0"; return 0 ;;
+      stop-user)
+        echo "1" >> "$MOCK_STOP_CALLS_FILE"
+        MOCK_STOPPED_STATE="true"
+        MOCK_STARTED_STATE="User is not started"
+        return 0
+        ;;
+    esac
+  elif [ "$1" = "user" ]; then
+    echo "$MOCK_USER_LIST"; return 0
+  fi
+}
+
+res=$(execute_scenario_b_user_stop 10 5)
+assert_eq "Case I: Scenario B user stop succeeds even if thermal baseline invalid" "STOP_SUCCESS" "$res"
+assert_eq "Case I: Target user 10 stop requested exactly once" "1" "$(get_mock_stop_calls)"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
