@@ -24,7 +24,7 @@ CANONICAL_SOURCE_DIR = os.path.join(WORKSPACE_ROOT, "nabu-global-helper-v3.2.0")
 
 SHELL_EXTENSIONS = {".sh"}
 
-# Strictly the 8 production release files
+# Strictly the 10 production release files
 PRODUCTION_FILES = [
     "module.prop",
     "service.sh",
@@ -32,6 +32,8 @@ PRODUCTION_FILES = [
     "auto_switch.sh",
     "customize.sh",
     "README.md",
+    os.path.join("lib", "thermal_engine.sh"),
+    os.path.join("lib", "lifecycle_engine.sh"),
     os.path.join("META-INF", "com", "google", "android", "update-binary"),
     os.path.join("META-INF", "com", "google", "android", "updater-script"),
 ]
