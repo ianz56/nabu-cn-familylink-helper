@@ -209,13 +209,13 @@ execute_scenario_b_user_stop() {
       ;;
     STOPPING)
       # User is already transitioning: wait up to timeout, NEVER issue duplicate stop
-      if wait_for_user_stopping "$target_uid" "$transition_timeout"; then
-        echo "STOPPING_TRANSITION_SUCCESS"
-        return 0
-      else
-        echo "STOPPING_TIMEOUT"
-        return 1
-      fi
+      wait_for_user_stopping "$target_uid" "$transition_timeout"
+      local w_rc=$?
+      case "$w_rc" in
+        0) echo "STOPPING_TRANSITION_SUCCESS"; return 0 ;;
+        2) echo "STOPPING_UNKNOWN_STATE"; return 2 ;;
+        *) echo "STOPPING_TIMEOUT"; return 1 ;;
+      esac
       ;;
     UNKNOWN)
       # Ambiguous state: FAIL CLOSED, abort remaining batch
@@ -242,13 +242,13 @@ execute_scenario_b_user_stop() {
           return 0
           ;;
         STOPPING)
-          if wait_for_user_stopping "$target_uid" "$transition_timeout"; then
-            echo "STOPPING_TRANSITION_SUCCESS"
-            return 0
-          else
-            echo "STOPPING_TIMEOUT"
-            return 1
-          fi
+          wait_for_user_stopping "$target_uid" "$transition_timeout"
+          local w_rc=$?
+          case "$w_rc" in
+            0) echo "STOPPING_TRANSITION_SUCCESS"; return 0 ;;
+            2) echo "STOPPING_UNKNOWN_STATE"; return 2 ;;
+            *) echo "STOPPING_TIMEOUT"; return 1 ;;
+          esac
           ;;
         RUNNING_LOCKED|RUNNING_UNLOCKED)
           # Confirmed: execute stop command
@@ -259,13 +259,13 @@ execute_scenario_b_user_stop() {
             echo "STOP_SUCCESS"
             return 0
           elif [ "$post_state" = "STOPPING" ]; then
-            if wait_for_user_stopping "$target_uid" "$transition_timeout"; then
-              echo "STOP_SUCCESS"
-              return 0
-            else
-              echo "STOP_TIMEOUT_STOPPING"
-              return 1
-            fi
+            wait_for_user_stopping "$target_uid" "$transition_timeout"
+            local post_w_rc=$?
+            case "$post_w_rc" in
+              0) echo "STOP_SUCCESS"; return 0 ;;
+              2) echo "STOP_UNKNOWN_STATE"; return 2 ;;
+              *) echo "STOP_TIMEOUT_STOPPING"; return 1 ;;
+            esac
           else
             echo "STOP_FAILED_${post_state}"
             return 1
@@ -289,16 +289,55 @@ execute_scenario_a_user_stop() {
   local switch_timeout="${2:-15}"
   local transition_timeout="${3:-10}"
 
-  # 1. Final pre-switch physical display verification
+  # ── Immediate Pre-Switch Precondition Revalidation ──
+  # 1. Physical display must be confirmed OFF
   if ! is_display_off; then
     echo "ABORT_DISPLAY_ON"
     return 1
   fi
 
-  # 2. Execute asynchronous user switch to User 0
+  # 2. Foreground user must equal exact target_uid
+  local cur_fg
+  cur_fg=$(get_current_user)
+  if [ "$cur_fg" != "$target_uid" ]; then
+    echo "ABORT_FG_USER_CHANGED"
+    return 1
+  fi
+
+  # 3. Target user must still be an eligible full secondary user
+  if ! is_eligible_secondary_user "$target_uid"; then
+    echo "ABORT_USER_INELIGIBLE"
+    return 1
+  fi
+
+  # 4. Target lifecycle state must not be STOPPED, STOPPING, or UNKNOWN
+  local pre_switch_state
+  pre_switch_state=$(check_user_lifecycle_state "$target_uid")
+  case "$pre_switch_state" in
+    STOPPED)
+      echo "ALREADY_STOPPED"
+      return 0
+      ;;
+    STOPPING)
+      echo "ABORT_TARGET_STOPPING"
+      return 1
+      ;;
+    UNKNOWN)
+      echo "FAIL_CLOSED_UNKNOWN_STATE"
+      return 2
+      ;;
+    RUNNING_LOCKED|RUNNING_UNLOCKED)
+      ;;
+    *)
+      echo "FAIL_CLOSED_UNKNOWN_STATE"
+      return 2
+      ;;
+  esac
+
+  # ── Execute Asynchronous User Switch to User 0 ──
   cmd activity switch-user 0 >/dev/null 2>&1
 
-  # 3. Wait for User 0 to become foreground
+  # Wait for User 0 to become foreground
   local wait_count=0
   local switch_ok=0
   while [ "$wait_count" -lt "$switch_timeout" ]; do
@@ -315,7 +354,7 @@ execute_scenario_a_user_stop() {
     return 1
   fi
 
-  # 4. Check if native stop-on-switch already stopped the secondary user
+  # ── Evaluate Post-Switch State & Native Stop-On-Switch ──
   local post_switch_state
   post_switch_state=$(check_user_lifecycle_state "$target_uid")
 
@@ -326,34 +365,77 @@ execute_scenario_a_user_stop() {
       ;;
     STOPPING)
       # Wait up to transition timeout; never issue duplicate stop
-      if wait_for_user_stopping "$target_uid" "$transition_timeout"; then
-        echo "TRANSITION_STOP_SUCCESS"
-        return 0
-      else
-        echo "STOPPING_TIMEOUT"
-        return 1
-      fi
+      wait_for_user_stopping "$target_uid" "$transition_timeout"
+      local w_rc=$?
+      case "$w_rc" in
+        0) echo "TRANSITION_STOP_SUCCESS"; return 0 ;;
+        2) echo "STOPPING_UNKNOWN_STATE"; return 2 ;;
+        *) echo "STOPPING_TIMEOUT"; return 1 ;;
+      esac
       ;;
     RUNNING_LOCKED|RUNNING_UNLOCKED)
-      # Secondary user remains running: fallback stop is permitted
-      cmd activity stop-user -w "$target_uid" >/dev/null 2>&1
-      local final_state
-      final_state=$(check_user_lifecycle_state "$target_uid")
-      if [ "$final_state" = "STOPPED" ]; then
-        echo "FALLBACK_STOP_SUCCESS"
-        return 0
-      elif [ "$final_state" = "STOPPING" ]; then
-        if wait_for_user_stopping "$target_uid" "$transition_timeout"; then
-          echo "FALLBACK_STOP_SUCCESS"
-          return 0
-        else
-          echo "FALLBACK_STOPPING_TIMEOUT"
-          return 1
-        fi
-      else
-        echo "FALLBACK_STOP_FAILED"
+      # Secondary user remains running. Before fallback stop:
+      # 1. Verify User 0 remains foreground
+      if [ "$(get_current_user)" -ne 0 ]; then
+        echo "FALLBACK_ABORT_FG_CHANGED"
         return 1
       fi
+
+      # 2. Revalidate target eligibility
+      if ! is_eligible_secondary_user "$target_uid"; then
+        echo "FALLBACK_ABORT_INELIGIBLE"
+        return 1
+      fi
+
+      # 3. Revalidate display is OFF
+      if ! is_display_off; then
+        echo "FALLBACK_ABORT_DISPLAY_ON"
+        return 1
+      fi
+
+      # 4. Revalidate lifecycle state immediately before fallback command
+      local pre_fb_state
+      pre_fb_state=$(check_user_lifecycle_state "$target_uid")
+      case "$pre_fb_state" in
+        STOPPED)
+          echo "FALLBACK_ALREADY_STOPPED"
+          return 0
+          ;;
+        STOPPING)
+          wait_for_user_stopping "$target_uid" "$transition_timeout"
+          local fb_w_rc=$?
+          case "$fb_w_rc" in
+            0) echo "FALLBACK_STOP_SUCCESS"; return 0 ;;
+            2) echo "STOPPING_UNKNOWN_STATE"; return 2 ;;
+            *) echo "FALLBACK_STOPPING_TIMEOUT"; return 1 ;;
+          esac
+          ;;
+        RUNNING_LOCKED|RUNNING_UNLOCKED)
+          # Confirmed: execute fallback stop
+          cmd activity stop-user -w "$target_uid" >/dev/null 2>&1
+          local final_state
+          final_state=$(check_user_lifecycle_state "$target_uid")
+          if [ "$final_state" = "STOPPED" ]; then
+            echo "FALLBACK_STOP_SUCCESS"
+            return 0
+          elif [ "$final_state" = "STOPPING" ]; then
+            wait_for_user_stopping "$target_uid" "$transition_timeout"
+            local fb_post_rc=$?
+            case "$fb_post_rc" in
+              0) echo "FALLBACK_STOP_SUCCESS"; return 0 ;;
+              2) echo "STOP_UNKNOWN_STATE"; return 2 ;;
+              *) echo "FALLBACK_STOPPING_TIMEOUT"; return 1 ;;
+            esac
+          else
+            echo "FALLBACK_STOP_FAILED"
+            return 1
+          fi
+          ;;
+        UNKNOWN|*)
+          echo "UNKNOWN_STATE_NO_FALLBACK"
+          return 1
+          ;;
+      esac
       ;;
     UNKNOWN|*)
       # Unrecognized state: DO NOT issue fallback stop! Leave user untouched.

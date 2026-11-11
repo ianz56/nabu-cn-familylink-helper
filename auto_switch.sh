@@ -61,35 +61,36 @@ else
   exit 1
 fi
 
-# ── Singleton Process Management & Idempotent Trap ──
+if [ -f "$LIB_DIR/daemon_cleanup.sh" ]; then
+  . "$LIB_DIR/daemon_cleanup.sh"
+else
+  log "FATAL: lib/daemon_cleanup.sh not found at $LIB_DIR/daemon_cleanup.sh" "ERROR"
+  exit 1
+fi
+
+# ── Singleton Process Management & Trap Registration ──
 MY_PID="$$"
 echo "$MY_PID" > "$PID_FILE" 2>/dev/null || true
-
-CLEANUP_RUNNING=0
-cleanup_on_exit() {
-  # Idempotency guard: prevent recursion if exit is called inside cleanup
-  if [ "$CLEANUP_RUNNING" -eq 1 ]; then
-    return 0
-  fi
-  CLEANUP_RUNNING=1
-  trap - EXIT INT TERM HUP
-  log "Daemon shutdown initiated (PID: $MY_PID)" "INFO"
-  restore_hardware_baseline "DAEMON_SHUTDOWN"
-  rm -f "$PID_FILE" 2>/dev/null
-  exit 0
-}
-trap cleanup_on_exit EXIT INT TERM HUP
+setup_daemon_signals
 
 # ── Daemon-Level Thermal Application Wrapper ──
 apply_adaptive_thermal() {
-  [ "$THERMAL_ENABLED" -eq 0 ] && return 0
-  [ -z "$THERMAL_ZONE_PATH" ] && return 0
+  # Dynamic runtime sensor recovery: if disabled or path lost, attempt revalidation
+  if [ "$THERMAL_ENABLED" -eq 0 ] || [ -z "$THERMAL_ZONE_PATH" ]; then
+    find_thermal_sensor || return 0
+  fi
 
   local raw_temp
-  raw_temp=$(cat "$THERMAL_ZONE_PATH/temp" 2>/dev/null)
-  case "$raw_temp" in
-    ''|*[!0-9]*) return 0 ;;
-  esac
+  raw_temp=$(sample_thermal_sensor "$THERMAL_ZONE_PATH")
+  local sample_rc=$?
+
+  if [ "$sample_rc" -ne 0 ]; then
+    log "Adaptive thermal sensor sample invalid ($raw_temp) at $THERMAL_ZONE_PATH. Disabling thermal enforcement and restoring hardware baseline." "WARN"
+    THERMAL_ENABLED=0
+    THERMAL_ZONE_PATH=""
+    restore_hardware_baseline "SENSOR_SAMPLE_INVALID"
+    return 1
+  fi
 
   local target_tier
   target_tier=$(determine_target_tier "$raw_temp" "$CURRENT_TIER")
@@ -237,8 +238,8 @@ while true; do
                   log "[Scenario B] Foreground user changed during batch stop; aborting remaining targets" "INFO"
                   break
                   ;;
-                FAIL_CLOSED_UNKNOWN_STATE)
-                  log "[Scenario B] ABORT: Target user $target_uid returned UNKNOWN state. Aborting batch stop for system safety." "WARN"
+                FAIL_CLOSED_UNKNOWN_STATE|STOPPING_UNKNOWN_STATE|STOP_UNKNOWN_STATE)
+                  log "[Scenario B] ABORT: Target user $target_uid entered UNKNOWN state ($b_res). Aborting batch stop for system safety." "WARN"
                   break
                   ;;
               esac

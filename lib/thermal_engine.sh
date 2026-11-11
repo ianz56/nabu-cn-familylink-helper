@@ -13,6 +13,7 @@
 : "${STATE_DIR:=/data/adb/modules/nabu-derpfest-helper/state}"
 : "${BASELINE_FILE:=$STATE_DIR/thermal_baseline.conf}"
 : "${OWNERSHIP_FILE:=$STATE_DIR/thermal_ownership.conf}"
+: "${THERMAL_SYSFS_DIR:=/sys/class/thermal}"
 
 # ── In-Memory State Variables ──
 THERMAL_ENABLED=0
@@ -53,7 +54,66 @@ clamp_limit() {
   fi
 }
 
-# ── Sensor Resolution & Plausibility Validation ──
+# ── Sensor Sample Validation ──
+# Validates a single thermal reading against strict physical bounds:
+# 15,000 m°C <= temperature <= 65,000 m°C (15.0°C to 65.0°C).
+# Rejects empty, nonnumeric, negative, or out-of-range values.
+validate_sensor_sample() {
+  local raw_val="$1"
+  local sensor_type="${2:-quiet_therm}"
+  local sensor_path="${3:-none}"
+
+  if [ -z "$raw_val" ]; then
+    echo "EMPTY_READING"
+    return 1
+  fi
+
+  case "$raw_val" in
+    ''|*[!0-9]*)
+      echo "NON_NUMERIC_READING"
+      return 1
+      ;;
+  esac
+
+  if [ "$raw_val" -lt 15000 ]; then
+    echo "OUT_OF_RANGE_LOW"
+    return 1
+  fi
+
+  if [ "$raw_val" -gt 65000 ]; then
+    echo "OUT_OF_RANGE_HIGH"
+    return 1
+  fi
+
+  echo "VALID_SAMPLE"
+  return 0
+}
+
+# ── Runtime Sensor Sampling with Fail-Closed Validation ──
+# Reads current temperature from THERMAL_ZONE_PATH/temp and validates sample.
+# If valid: prints temperature in m°C, returns 0.
+# If invalid or sensor disappeared: prints validation reason, returns 1.
+sample_thermal_sensor() {
+  local zone_path="${1:-$THERMAL_ZONE_PATH}"
+  if [ -z "$zone_path" ] || [ ! -f "$zone_path/temp" ]; then
+    echo "SENSOR_DISAPPEARED"
+    return 1
+  fi
+
+  local raw_val
+  raw_val=$(cat "$zone_path/temp" 2>/dev/null)
+  local val_res
+  val_res=$(validate_sensor_sample "$raw_val" "quiet_therm" "$zone_path")
+  if [ "$val_res" = "VALID_SAMPLE" ]; then
+    echo "$raw_val"
+    return 0
+  else
+    echo "$val_res"
+    return 1
+  fi
+}
+
+# ── Sensor Resolution & Initial Validation ──
 # On Xiaomi Pad 5 (nabu), quiet_therm is calibrated for external surface/skin temperature.
 # Fallback semantics:
 # - cpu_therm: measures SoC junction/die temp (typically 15-30°C higher than skin).
@@ -63,22 +123,21 @@ clamp_limit() {
 # Policy: If quiet_therm is absent, do not silently apply the skin curve to mismatched thermistors.
 # Disable adaptive thermal safely unless a validated sensor is resolved.
 find_thermal_sensor() {
-  local cand tz t_type t_temp
-  for tz in /sys/class/thermal/thermal_zone*; do
+  local cand tz t_type t_temp v_res
+  for tz in "$THERMAL_SYSFS_DIR"/thermal_zone*; do
     if [ -f "$tz/type" ] && [ -f "$tz/temp" ]; then
       t_type=$(cat "$tz/type" 2>/dev/null)
       if [ "$t_type" = "quiet_therm" ]; then
         t_temp=$(cat "$tz/temp" 2>/dev/null)
-        case "$t_temp" in
-          ''|*[!0-9]*) continue ;;
-        esac
-        # Plausible skin range: 15°C to 65°C (15000 to 65000 m°C)
-        if [ "$t_temp" -ge 15000 ] && [ "$t_temp" -le 65000 ]; then
+        v_res=$(validate_sensor_sample "$t_temp" "quiet_therm" "$tz")
+        if [ "$v_res" = "VALID_SAMPLE" ]; then
           THERMAL_ZONE_PATH="$tz"
           THERMAL_ZONE_TYPE="quiet_therm"
           THERMAL_ENABLED=1
-          [ "$(type log 2>/dev/null)" = "function" ] && log "Validated skin thermal sensor: $tz (quiet_therm, temp=${t_temp}mC)" "INFO"
+          command -v log >/dev/null 2>&1 && log "Validated skin thermal sensor: $tz (quiet_therm, temp=${t_temp}mC)" "INFO"
           return 0
+        else
+          command -v log >/dev/null 2>&1 && log "Notice: quiet_therm found at $tz but initial sample invalid ($v_res, raw='$t_temp')" "WARN"
         fi
       fi
     fi
@@ -86,15 +145,15 @@ find_thermal_sensor() {
 
   # Fallback investigation: log presence but refuse silent curve mismatch
   for cand in cpu_therm battery xo_therm; do
-    for tz in /sys/class/thermal/thermal_zone*; do
+    for tz in "$THERMAL_SYSFS_DIR"/thermal_zone*; do
       if [ -f "$tz/type" ] && [ "$(cat "$tz/type" 2>/dev/null)" = "$cand" ]; then
-        [ "$(type log 2>/dev/null)" = "function" ] && log "Notice: Sensor '$cand' detected at $tz, but skin-curve thresholds (36-42°C) are incompatible. Adaptive thermal disabled for safety." "WARN"
+        command -v log >/dev/null 2>&1 && log "Notice: Sensor '$cand' detected at $tz, but skin-curve thresholds (36-42°C) are incompatible. Adaptive thermal disabled for safety." "WARN"
       fi
     done
   done
 
   THERMAL_ENABLED=0
-  [ "$(type log 2>/dev/null)" = "function" ] && log "WARNING: Validated skin thermal sensor (quiet_therm) unavailable. Adaptive thermal disabled." "WARN"
+  command -v log >/dev/null 2>&1 && log "WARNING: Validated skin thermal sensor (quiet_therm) unavailable. Adaptive thermal disabled." "WARN"
   return 1
 }
 
@@ -111,11 +170,11 @@ capture_baseline_frequencies() {
     if [ "$stored_boot_id" = "$current_boot_id" ] && [ "$stored_boot_id" != "unknown_boot" ]; then
       . "$BASELINE_FILE"
       if [ -n "$BASE_P0" ] && [ -n "$BASE_P4" ] && [ -n "$BASE_P7" ] && [ -n "$BASE_GPU" ]; then
-        [ "$(type log 2>/dev/null)" = "function" ] && log "Loaded valid baseline for boot $current_boot_id: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU" "INFO"
+        command -v log >/dev/null 2>&1 && log "Loaded valid baseline for boot $current_boot_id: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU" "INFO"
         return 0
       fi
     else
-      [ "$(type log 2>/dev/null)" = "function" ] && log "Stale baseline file detected from different boot ($stored_boot_id vs $current_boot_id). Purging." "INFO"
+      command -v log >/dev/null 2>&1 && log "Stale baseline file detected from different boot ($stored_boot_id vs $current_boot_id). Purging." "INFO"
       rm -f "$BASELINE_FILE"
     fi
   fi
@@ -150,11 +209,11 @@ BASE_P7="$BASE_P7"
 BASE_GPU="$BASE_GPU"
 EOF
     mv -f "$tmp_b" "$BASELINE_FILE" 2>/dev/null || rm -f "$tmp_b" 2>/dev/null
-    [ "$(type log 2>/dev/null)" = "function" ] && log "Runtime baseline captured: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU (boot: $current_boot_id)" "INFO"
+    command -v log >/dev/null 2>&1 && log "Runtime baseline captured: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU (boot: $current_boot_id)" "INFO"
     return 0
   fi
 
-  [ "$(type log 2>/dev/null)" = "function" ] && log "ERROR: Frequency nodes unstable or unreadable during baseline capture. Deferring." "WARN"
+  command -v log >/dev/null 2>&1 && log "ERROR: Frequency nodes unstable or unreadable during baseline capture. Deferring." "WARN"
   return 1
 }
 
@@ -167,6 +226,7 @@ save_ownership_records() {
   cat <<EOF > "$tmp_file"
 BOOT_ID="$cur_boot"
 RECOVERY_PENDING="$RECOVERY_PENDING"
+CURRENT_TIER="$CURRENT_TIER"
 APPLIED_P0="$APPLIED_P0"
 READBACK_P0="$READBACK_P0"
 STATUS_P0="$STATUS_P0"
@@ -194,6 +254,7 @@ load_ownership_records() {
     else
       rm -f "$OWNERSHIP_FILE" 2>/dev/null
       RECOVERY_PENDING=0
+      CURRENT_TIER=0
       APPLIED_P0="NONE"; READBACK_P0="NONE"; STATUS_P0="BASELINE"
       APPLIED_P4="NONE"; READBACK_P4="NONE"; STATUS_P4="BASELINE"
       APPLIED_P7="NONE"; READBACK_P7="NONE"; STATUS_P7="BASELINE"
@@ -353,10 +414,19 @@ apply_single_node_limit() {
       echo "APPLIED_VERIFIED $target $readback"
       return 0
     elif [ -n "$readback" ] && [ "$readback" -lt "$target" ] 2>/dev/null; then
-      echo "VENDOR_CLAMPED $readback $readback"
+      # Write was clamped below target by vendor!
+      if [ "$readback" = "$cur_applied" ]; then
+        # Rule 1: Retain previous trusted module ownership record because it remains
+        # valid evidence of ownership (node stayed at cur_applied).
+        echo "VENDOR_CLAMPED $cur_applied $readback"
+      else
+        # Rule 2: Unexplained lower read-back (readback != cur_applied).
+        # Do NOT promote unexplained lower read-back to APPLIED!
+        echo "VENDOR_CLAMPED NONE $readback"
+      fi
       return 0
     else
-      echo "WRITE_FAILED $cur_applied $readback"
+      echo "WRITE_FAILED NONE $readback"
       return 1
     fi
   fi
@@ -366,7 +436,8 @@ apply_single_node_limit() {
   if [ "$cur_val" -lt "$target" ]; then
     # Current frequency is lower than requested target, and not owned by our cur_applied.
     # Treat as external vendor limit: preserve it and never raise it!
-    echo "VENDOR_LOWER_PRESERVED $cur_applied $cur_val"
+    # Do NOT promote cur_val to APPLIED. APPLIED is NONE.
+    echo "VENDOR_LOWER_PRESERVED NONE $cur_val"
     return 0
   fi
 
@@ -383,17 +454,20 @@ apply_single_node_limit() {
       echo "APPLIED_VERIFIED $target $readback"
       return 0
     elif [ -n "$readback" ] && [ "$readback" -lt "$target" ] 2>/dev/null; then
-      echo "VENDOR_CLAMPED $readback $readback"
+      # Initial baseline-to-target write is clamped below target.
+      # cur_applied was NONE / baseline. We did NOT apply readback.
+      # Do NOT promote unexplained lower readback to APPLIED!
+      echo "VENDOR_CLAMPED NONE $readback"
       return 0
     else
-      echo "WRITE_FAILED $cur_applied $readback"
+      echo "WRITE_FAILED NONE $readback"
       return 1
     fi
   fi
 
   # Case D: Current is between cur_applied and base, or an unrelated value
   # External controller modified the node. Ownership uncertain -> fail closed!
-  echo "OWNERSHIP_UNCERTAIN $cur_applied $cur_val"
+  echo "OWNERSHIP_UNCERTAIN NONE $cur_val"
   return 1
 }
 
@@ -405,6 +479,7 @@ restore_single_node_baseline() {
   local applied="$4"
   local cur_boot="$5"
   local stored_boot="$6"
+  local last_status="${7:-BASELINE}"
 
   # 1. Missing node check
   if [ ! -f "$node_path" ]; then
@@ -443,8 +518,24 @@ restore_single_node_baseline() {
   # 5. Check module ownership
   case "$applied" in
     ''|'NONE'|*[!0-9]*)
-      # Module never applied a cap or has no record of having throttled this node.
-      # But cur_val != base. An external controller or vendor set cur_val.
+      if [ "$last_status" = "VENDOR_CLAMPED" ] || [ "$last_status" = "VENDOR_LOWER_PRESERVED" ]; then
+        # Node was clamped by external vendor limit during module throttling.
+        # Test if the clamp is lifted by writing baseline:
+        echo "$base" > "$node_path" 2>/dev/null
+        local readback
+        readback=$(cat "$node_path" 2>/dev/null)
+        if [ "$readback" = "$base" ]; then
+          echo "RESTORED_VERIFIED $readback"
+          return 0
+        elif [ -n "$readback" ] && [ "$readback" -lt "$base" ] 2>/dev/null; then
+          echo "PARTIAL_RESTORE_VENDOR_CLAMP $readback"
+          return 0
+        else
+          echo "RESTORE_FAILED $readback"
+          return 1
+        fi
+      fi
+      # Otherwise, external controller set an unrelated value without module involvement:
       echo "OWNERSHIP_UNCERTAIN $cur_val"
       return 1
       ;;
@@ -495,7 +586,7 @@ restore_hardware_baseline() {
 
   if [ -z "$BASE_P0" ] || [ -z "$BASE_P4" ] || [ -z "$BASE_P7" ] || [ -z "$BASE_GPU" ]; then
     capture_baseline_frequencies || {
-      [ "$(type log 2>/dev/null)" = "function" ] && log "WARNING: Cannot restore hardware baseline: baseline capture unreadable." "WARN"
+      command -v log >/dev/null 2>&1 && log "WARNING: Cannot restore hardware baseline: baseline capture unreadable." "WARN"
       RECOVERY_PENDING=1
       return 1
     }
@@ -505,10 +596,10 @@ restore_hardware_baseline() {
   load_ownership_records
 
   local res_p0 res_p4 res_p7 res_gpu
-  res_p0=$(restore_single_node_baseline "CPU_P0" "$CPU_P0_MAX" "$BASE_P0" "$APPLIED_P0" "$cur_boot" "$stored_boot")
-  res_p4=$(restore_single_node_baseline "CPU_P4" "$CPU_P4_MAX" "$BASE_P4" "$APPLIED_P4" "$cur_boot" "$stored_boot")
-  res_p7=$(restore_single_node_baseline "CPU_P7" "$CPU_P7_MAX" "$BASE_P7" "$APPLIED_P7" "$cur_boot" "$stored_boot")
-  res_gpu=$(restore_single_node_baseline "GPU" "$GPU_MAX_CLK" "$BASE_GPU" "$APPLIED_GPU" "$cur_boot" "$stored_boot")
+  res_p0=$(restore_single_node_baseline "CPU_P0" "$CPU_P0_MAX" "$BASE_P0" "$APPLIED_P0" "$cur_boot" "$stored_boot" "$STATUS_P0")
+  res_p4=$(restore_single_node_baseline "CPU_P4" "$CPU_P4_MAX" "$BASE_P4" "$APPLIED_P4" "$cur_boot" "$stored_boot" "$STATUS_P4")
+  res_p7=$(restore_single_node_baseline "CPU_P7" "$CPU_P7_MAX" "$BASE_P7" "$APPLIED_P7" "$cur_boot" "$stored_boot" "$STATUS_P7")
+  res_gpu=$(restore_single_node_baseline "GPU" "$GPU_MAX_CLK" "$BASE_GPU" "$APPLIED_GPU" "$cur_boot" "$stored_boot" "$STATUS_GPU")
 
   local stat_p0 val_p0 stat_p4 val_p4 stat_p7 val_p7 stat_gpu val_gpu
   stat_p0=$(echo "$res_p0" | awk '{print $1}')
@@ -523,29 +614,37 @@ restore_hardware_baseline() {
   # Update per-node ownership status
   STATUS_P0="$stat_p0"
   if [ "$stat_p0" = "RESTORED_VERIFIED" ] || [ "$stat_p0" = "ALREADY_BASELINE" ]; then
-    APPLIED_P0="NONE"; READBACK_P0="$val_p0"
+    STATUS_P0="BASELINE"; APPLIED_P0="NONE"; READBACK_P0="$val_p0"
   elif [ "$stat_p0" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p0" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    APPLIED_P0="NONE"; READBACK_P0="$val_p0"
+  else
     READBACK_P0="$val_p0"
   fi
 
   STATUS_P4="$stat_p4"
   if [ "$stat_p4" = "RESTORED_VERIFIED" ] || [ "$stat_p4" = "ALREADY_BASELINE" ]; then
-    APPLIED_P4="NONE"; READBACK_P4="$val_p4"
+    STATUS_P4="BASELINE"; APPLIED_P4="NONE"; READBACK_P4="$val_p4"
   elif [ "$stat_p4" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p4" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    APPLIED_P4="NONE"; READBACK_P4="$val_p4"
+  else
     READBACK_P4="$val_p4"
   fi
 
   STATUS_P7="$stat_p7"
   if [ "$stat_p7" = "RESTORED_VERIFIED" ] || [ "$stat_p7" = "ALREADY_BASELINE" ]; then
-    APPLIED_P7="NONE"; READBACK_P7="$val_p7"
+    STATUS_P7="BASELINE"; APPLIED_P7="NONE"; READBACK_P7="$val_p7"
   elif [ "$stat_p7" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_p7" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    APPLIED_P7="NONE"; READBACK_P7="$val_p7"
+  else
     READBACK_P7="$val_p7"
   fi
 
   STATUS_GPU="$stat_gpu"
   if [ "$stat_gpu" = "RESTORED_VERIFIED" ] || [ "$stat_gpu" = "ALREADY_BASELINE" ]; then
-    APPLIED_GPU="NONE"; READBACK_GPU="$val_gpu"
+    STATUS_GPU="BASELINE"; APPLIED_GPU="NONE"; READBACK_GPU="$val_gpu"
   elif [ "$stat_gpu" = "VENDOR_LOWER_PRESERVED" ] || [ "$stat_gpu" = "PARTIAL_RESTORE_VENDOR_CLAMP" ]; then
+    APPLIED_GPU="NONE"; READBACK_GPU="$val_gpu"
+  else
     READBACK_GPU="$val_gpu"
   fi
 
@@ -587,13 +686,13 @@ restore_hardware_baseline() {
   save_ownership_records
 
   if [ "$aggregate_outcome" = "FULL_BASELINE_RESTORED" ]; then
-    [ "$(type log 2>/dev/null)" = "function" ] && log "Hardware restoration complete ($aggregate_outcome, reason: $reason, P0=$stat_p0/$val_p0, P4=$stat_p4/$val_p4, P7=$stat_p7/$val_p7, GPU=$stat_gpu/$val_gpu)." "INFO"
+    command -v log >/dev/null 2>&1 && log "Hardware restoration complete ($aggregate_outcome, reason: $reason, P0=$stat_p0/$val_p0, P4=$stat_p4/$val_p4, P7=$stat_p7/$val_p7, GPU=$stat_gpu/$val_gpu)." "INFO"
     return 0
   elif [ "$aggregate_outcome" = "SAFE_EXTERNAL_LIMITS_PRESERVED" ]; then
-    [ "$(type log 2>/dev/null)" = "function" ] && log "Hardware safe limits preserved ($aggregate_outcome, reason: $reason, P0=$stat_p0/$val_p0, P4=$stat_p4/$val_p4, P7=$stat_p7/$val_p7, GPU=$stat_gpu/$val_gpu)." "INFO"
+    command -v log >/dev/null 2>&1 && log "Hardware safe limits preserved ($aggregate_outcome, reason: $reason, P0=$stat_p0/$val_p0, P4=$stat_p4/$val_p4, P7=$stat_p7/$val_p7, GPU=$stat_gpu/$val_gpu)." "INFO"
     return 0
   else
-    [ "$(type log 2>/dev/null)" = "function" ] && log "Hardware restoration warning ($aggregate_outcome, reason: $reason, P0=$stat_p0/$val_p0, P4=$stat_p4/$val_p4, P7=$stat_p7/$val_p7, GPU=$stat_gpu/$val_gpu). Recovery remains pending." "WARN"
+    command -v log >/dev/null 2>&1 && log "Hardware restoration warning ($aggregate_outcome, reason: $reason, P0=$stat_p0/$val_p0, P4=$stat_p4/$val_p4, P7=$stat_p7/$val_p7, GPU=$stat_gpu/$val_gpu). Recovery remains pending." "WARN"
     return 1
   fi
 }

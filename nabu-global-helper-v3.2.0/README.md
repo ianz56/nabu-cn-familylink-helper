@@ -31,15 +31,16 @@ Nabu DerpFest 17 Helper v3.2.0 provides autonomous dynamic secondary user lifecy
 4. **Second Space Adaptive Thermal Tier 0–4 (Shared Hardware Governance):**
    * Operates on shared physical Snapdragon 860 CPU (Kryo 485) and Adreno 640 GPU hardware.
    * Activated only when an eligible secondary user is foreground.
-   * Dynamically resolves chassis skin thermistor `quiet_therm` (`thermal_zone74`) with fallback validation.
+   * Dynamically resolves chassis skin thermistor `quiet_therm` with strict runtime sample validation (`15,000 <= temp_mC <= 65,000`). If a sensor sample is invalid or the sensor disappears, adaptive thermal is disabled and hardware baseline is restored safely.
    * Features exact original HyperOS `lite-global` hysteresis curve:
      * **Tier 0 (<=35°C):** Baseline (P0=1.78GHz, P4=2.42GHz, P7=2.84GHz, GPU=675MHz)
      * **Tier 1 (>=36°C / drop <35°C):** P0=Base, P4=2.13GHz, P7=2.13GHz, GPU=585MHz
      * **Tier 2 (>=38°C / drop <37°C):** P0=1.63GHz, P4=1.92GHz, P7=1.92GHz, GPU=499MHz
      * **Tier 3 (>=40°C / drop <39°C):** P0=1.48GHz, P4=1.61GHz, P7=1.61GHz, GPU=427MHz
      * **Tier 4 (>=42°C / drop <41°C):** P0=1.38GHz, P4=1.40GHz, P7=1.40GHz, GPU=345MHz
-   * **Power HAL & libperfmgr Governance:** Reads sysfs values before writing; never overwrites vendor-imposed lower safety limits; tracks external overwrites to avoid thrashing.
-   * **Safe Baseline Restoration:** Runtime baseline captured fresh per-boot (verified via `/proc/sys/kernel/random/boot_id`). Restored immediately whenever User 0 is foreground, when secondary user is stopped, or upon daemon shutdown (trapped `EXIT`, `INT`, `TERM`).
+   * **Power HAL & libperfmgr Governance:** Reads sysfs values before writing; never overwrites vendor-imposed lower safety limits; distinguishes module ownership from external clamps; tracks external overwrites to avoid thrashing.
+   * **Safe Baseline Restoration:** Runtime baseline captured fresh per-boot (verified via `/proc/sys/kernel/random/boot_id`). Restored immediately whenever User 0 is foreground, when secondary user is stopped, upon runtime sensor error, or upon daemon shutdown (trapped `EXIT`, `INT`, `TERM`).
+   * **Stop-User Command:** Strictly uses `cmd activity stop-user -w "$target_uid"` without `-f`. Does not force-stop related profiles or bypass profile safety.
 
 5. **Diagnostic Action Button:**
    * Operates in strictly non-destructive diagnostic mode.

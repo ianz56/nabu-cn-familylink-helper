@@ -32,7 +32,7 @@ fi
 ui_print "  [✓] Android version verified: Android 17 (SDK $SDK_VER)"
 
 # 3. File Completeness Assertion
-for req_file in "$MODPATH/service.sh" "$MODPATH/auto_switch.sh" "$MODPATH/action.sh" "$MODPATH/module.prop" "$MODPATH/lib/thermal_engine.sh" "$MODPATH/lib/lifecycle_engine.sh"; do
+for req_file in "$MODPATH/service.sh" "$MODPATH/auto_switch.sh" "$MODPATH/action.sh" "$MODPATH/module.prop" "$MODPATH/lib/thermal_engine.sh" "$MODPATH/lib/lifecycle_engine.sh" "$MODPATH/lib/daemon_cleanup.sh"; do
   if [ ! -f "$req_file" ]; then
     ui_print "  [FATAL ERROR] Missing required file: $req_file"
     abort "Module file structure incomplete."
