@@ -167,12 +167,9 @@ find_thermal_sensor() {
 validate_baseline_value() {
   local val="$1"
   case "$val" in
-    ''|*[!0-9]*) return 1 ;;
+    ''|0*|*[!0-9]*) return 1 ;;
+    *) return 0 ;;
   esac
-  if [ "$val" -le 0 ] 2>/dev/null; then
-    return 1
-  fi
-  return 0
 }
 
 # ── Boot-Scoped Initialization Guard ──
@@ -204,11 +201,13 @@ write_boot_guard() {
   mkdir -p "$guard_dir" 2>/dev/null
 
   local tmp_g="${GUARD_FILE}.tmp.$$"
-  cat <<EOF > "$tmp_g" 2>/dev/null
+  {
+    cat <<EOF > "$tmp_g"
 BOOT_ID="$cur_boot"
 INITIALIZED_AT="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'RUNTIME')"
 STATUS="INITIALIZED"
 EOF
+  } 2>/dev/null
   if [ ! -s "$tmp_g" ]; then
     rm -f "$tmp_g" 2>/dev/null
     return 1
@@ -353,10 +352,15 @@ capture_baseline_frequencies() {
         BASE_P4="$f_p4"
         BASE_P7="$f_p7"
         BASE_GPU="$f_gpu"
-        BASELINE_VALID=1
-        write_boot_guard "$current_boot_id"
-        command -v log >/dev/null 2>&1 && log "Loaded and verified valid baseline for boot $current_boot_id: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU" "INFO"
-        return 0
+        if write_boot_guard "$current_boot_id"; then
+          BASELINE_VALID=1
+          command -v log >/dev/null 2>&1 && log "Loaded and verified valid baseline for boot $current_boot_id: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU" "INFO"
+          return 0
+        else
+          BASELINE_VALID=0
+          command -v log >/dev/null 2>&1 && log "ERROR: Failed to persist boot guard for verified existing baseline ($current_boot_id); adaptive thermal disabled for safety." "ERROR"
+          return 1
+        fi
       else
         command -v log >/dev/null 2>&1 && log "ERROR: Same-boot baseline file $BASELINE_FILE contains invalid frequencies (P0='$f_p0', P4='$f_p4', P7='$f_p7', GPU='$f_gpu'). Rejecting without silent overwrite." "ERROR"
         BASELINE_VALID=0
@@ -430,13 +434,15 @@ capture_baseline_frequencies() {
 
   # 4. Atomic write of baseline file
   local tmp_b="${BASELINE_FILE}.tmp.$$"
-  cat <<EOF > "$tmp_b" 2>/dev/null
+  {
+    cat <<EOF > "$tmp_b"
 BOOT_ID="$current_boot_id"
 BASE_P0="$BASE_P0"
 BASE_P4="$BASE_P4"
 BASE_P7="$BASE_P7"
 BASE_GPU="$BASE_GPU"
 EOF
+  } 2>/dev/null
   if [ ! -s "$tmp_b" ]; then
     rm -f "$tmp_b" 2>/dev/null
     command -v log >/dev/null 2>&1 && log "ERROR: Failed to write temporary baseline file $tmp_b." "ERROR"

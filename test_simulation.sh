@@ -1016,7 +1016,7 @@ assert_eq "Case C: No baseline file recreated" "0" "$([ -f "$BASELINE_FILE" ] &&
 assert_eq "Case C: P4 node untouched" "1401600" "$(cat "$CPU_P4_MAX")"
 
 # ── Case D: Same-boot baseline contains invalid values ──
-for bad_val in "" "abc" "0" "-100" "00"; do
+for bad_val in "" "abc" "0" "-100" "00" "01" "001"; do
   cat <<EOF > "$BASELINE_FILE"
 BOOT_ID="$P117_BOOT_ID"
 BASE_P0="1785600"
@@ -1255,6 +1255,155 @@ cmd() {
 res=$(execute_scenario_b_user_stop 10 5)
 assert_eq "Case I: Scenario B user stop succeeds even if thermal baseline invalid" "STOP_SUCCESS" "$res"
 assert_eq "Case I: Target user 10 stop requested exactly once" "1" "$(get_mock_stop_calls)"
+
+# ── 10. Boot Guard Write Verification & Numeric Format Tests ──
+echo ""
+echo "── 10. Boot Guard Write Verification & Numeric Format Tests ──"
+
+P118_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "boot-test-118")"
+
+# ── 10.A: Existing valid baseline, guard write succeeds ──
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P118_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+rm -f "$GUARD_FILE" "$OWNERSHIP_FILE"
+
+BASE_P0=""; BASE_P4=""; BASE_P7=""; BASE_GPU=""
+BASELINE_VALID=0
+
+guard_succ_res=0
+capture_baseline_frequencies || guard_succ_res=$?
+assert_eq "Case 10.A: Existing valid baseline accepted when guard write succeeds" "0" "$guard_succ_res"
+assert_eq "Case 10.A: BASELINE_VALID set to 1" "1" "$BASELINE_VALID"
+assert_eq "Case 10.A: Durable boot guard exists on disk" "1" "$([ -f "$GUARD_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case 10.A: Boot guard contains current boot ID" "$P118_BOOT_ID" "$(grep "^BOOT_ID=" "$GUARD_FILE" 2>/dev/null | cut -d'"' -f2)"
+assert_eq "Case 10.A: BASE_P0 correctly populated" "1785600" "$BASE_P0"
+assert_eq "Case 10.A: BASE_P4 correctly populated" "2419200" "$BASE_P4"
+assert_eq "Case 10.A: BASE_P7 correctly populated" "2841600" "$BASE_P7"
+assert_eq "Case 10.A: BASE_GPU correctly populated" "675000000" "$BASE_GPU"
+
+# ── 10.B: Existing valid baseline, guard write fails ──
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P118_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+
+cat <<EOF > "$OWNERSHIP_FILE"
+BOOT_ID="$P118_BOOT_ID"
+RECOVERY_PENDING="0"
+CURRENT_TIER="2"
+APPLIED_P0="NONE"
+READBACK_P0="NONE"
+STATUS_P0="BASELINE"
+APPLIED_P4="1920000"
+READBACK_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+APPLIED_P7="NONE"
+READBACK_P7="NONE"
+STATUS_P7="BASELINE"
+APPLIED_GPU="NONE"
+READBACK_GPU="NONE"
+STATUS_GPU="BASELINE"
+EOF
+
+echo "1920000" > "$CPU_P4_MAX"
+BASE_P0=""; BASE_P4=""; BASE_P7=""; BASE_GPU=""
+BASELINE_VALID=1
+
+# Point GUARD_FILE to an unwritable directory in mock filesystem
+MOCK_UNWRITABLE_DIR="$TEST_DIR/unwritable_guard_dir"
+mkdir -p "$MOCK_UNWRITABLE_DIR"
+chmod 500 "$MOCK_UNWRITABLE_DIR"
+OLD_GUARD_FILE="$GUARD_FILE"
+GUARD_FILE="$MOCK_UNWRITABLE_DIR/guard_target"
+
+guard_fail_res=0
+capture_baseline_frequencies || guard_fail_res=$?
+
+# Restore permissions for cleanup
+chmod 700 "$MOCK_UNWRITABLE_DIR"
+rm -rf "$MOCK_UNWRITABLE_DIR"
+GUARD_FILE="$OLD_GUARD_FILE"
+
+assert_eq "Case 10.B: Capture returns nonzero when guard write fails" "1" "$guard_fail_res"
+assert_eq "Case 10.B: BASELINE_VALID set to 0 on guard write failure" "0" "$BASELINE_VALID"
+assert_eq "Case 10.B: Zero sysfs writes (P4 remains 1920000)" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case 10.B: Existing valid baseline file preserved (P4=2419200)" "2419200" "$(grep "^BASE_P4=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)"
+assert_eq "Case 10.B: Existing valid baseline file preserved (boot ID matches)" "$P118_BOOT_ID" "$(grep "^BOOT_ID=" "$BASELINE_FILE" 2>/dev/null | cut -d'"' -f2)"
+assert_eq "Case 10.B: Existing ownership record preserved (APPLIED_P4=1920000)" "1920000" "$(grep "^APPLIED_P4=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)"
+assert_eq "Case 10.B: Existing ownership record preserved (CURRENT_TIER=2)" "2" "$(grep "^CURRENT_TIER=" "$OWNERSHIP_FILE" 2>/dev/null | cut -d'"' -f2)"
+
+# ── 10.C: Strict numeric format unit tests ──
+# Valid positive decimal integers (^[1-9][0-9]*$)
+num_res=0; validate_baseline_value "1" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '1' accepted" "0" "$num_res"
+
+num_res=0; validate_baseline_value "9" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '9' accepted" "0" "$num_res"
+
+num_res=0; validate_baseline_value "10" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '10' accepted" "0" "$num_res"
+
+num_res=0; validate_baseline_value "1785600" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '1785600' accepted" "0" "$num_res"
+
+num_res=0; validate_baseline_value "2419200" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '2419200' accepted" "0" "$num_res"
+
+# Invalid / leading zero / nonnumeric / negative values
+num_res=0; validate_baseline_value "01" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '01' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "001" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '001' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "0" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '0' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "00" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '00' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "-1" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '-1' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value empty rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "abc" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value 'abc' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "12a" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '12a' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "a12" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value 'a12' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value " 1" || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value ' 1' rejected" "1" "$num_res"
+
+num_res=0; validate_baseline_value "1 " || num_res=$?
+assert_eq "Case 10.C: validate_baseline_value '1 ' rejected" "1" "$num_res"
+
+# Baseline file with leading-zero rejected by capture_baseline_frequencies
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P118_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="02419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+rm -f "$GUARD_FILE"
+lead_res=0
+capture_baseline_frequencies || lead_res=$?
+assert_eq "Case 10.C: Baseline file with leading zero P4='02419200' rejected" "1" "$lead_res"
+assert_eq "Case 10.C: BASELINE_VALID remains 0 on leading zero" "0" "$BASELINE_VALID"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
