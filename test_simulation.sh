@@ -1406,6 +1406,204 @@ assert_eq "Case 10.C: Baseline file with leading zero P4='02419200' rejected" "1
 assert_eq "Case 10.C: BASELINE_VALID remains 0 on leading zero" "0" "$BASELINE_VALID"
 
 echo ""
+echo "── 11. Phase 11.9: Baseline Trust vs. Thermal Authorization ──"
+
+P119_BOOT_ID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
+# Re-eval production apply_adaptive_thermal from auto_switch.sh
+eval "$(sed -n '/^apply_adaptive_thermal()/,/^}/p' "$SCRIPT_DIR/auto_switch.sh")"
+
+# Setup hot thermal sensor (45°C -> Tier 2) so any unauthorized apply_adaptive_thermal would write limits
+THERMAL_ENABLED=1
+THERMAL_ZONE_PATH="$MOCK_THERMAL_DIR/thermal_zone0"
+echo "45000" > "$MOCK_THERMAL_DIR/thermal_zone0/temp"
+echo "1785600" > "$CPU_P0_MAX"
+echo "2419200" > "$CPU_P4_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+
+# Test 1: Existing valid baseline + guard write failure -> thermal remains unauthorized
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P119_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+cat <<EOF > "$OWNERSHIP_FILE"
+BOOT_ID="$P119_BOOT_ID"
+RECOVERY_PENDING="0"
+CURRENT_TIER="2"
+APPLIED_P0="NONE"
+READBACK_P0="NONE"
+STATUS_P0="BASELINE"
+APPLIED_P4="1920000"
+READBACK_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+APPLIED_P7="NONE"
+READBACK_P7="NONE"
+STATUS_P7="BASELINE"
+APPLIED_GPU="NONE"
+READBACK_GPU="NONE"
+STATUS_GPU="BASELINE"
+EOF
+echo "1920000" > "$CPU_P4_MAX"
+CURRENT_TIER=2
+RECOVERY_PENDING=0
+IN_MEMORY_BOOT_ID="$P119_BOOT_ID"
+
+MOCK_P119_UNWRITABLE="$TEST_DIR/p119_unwritable_guard"
+mkdir -p "$MOCK_P119_UNWRITABLE"
+chmod 500 "$MOCK_P119_UNWRITABLE"
+OLD_P119_GUARD="$GUARD_FILE"
+GUARD_FILE="$MOCK_P119_UNWRITABLE/guard_target"
+
+p119_cap_rc=0
+capture_baseline_frequencies || p119_cap_rc=$?
+chmod 700 "$MOCK_P119_UNWRITABLE"
+rm -rf "$MOCK_P119_UNWRITABLE"
+GUARD_FILE="$OLD_P119_GUARD"
+
+assert_eq "Case 11.1: Capture fails when guard write fails" "1" "$p119_cap_rc"
+assert_eq "Case 11.1: THERMAL_AUTHORIZED remains 0 on guard write failure" "0" "$THERMAL_AUTHORIZED"
+assert_eq "Case 11.1: BASELINE_VALID remains 0 on guard write failure" "0" "$BASELINE_VALID"
+
+# Test 2: Invoke actual restore_hardware_baseline() after test 1 -> owned cap restores, thermal remains unauthorized
+rm -f "$GUARD_FILE"
+p119_rest_rc=0
+restore_hardware_baseline "P119_TEST2_RESTORE" || p119_rest_rc=$?
+assert_eq "Case 11.2: restore_hardware_baseline succeeds with valid baseline & owned cap" "0" "$p119_rest_rc"
+assert_eq "Case 11.2: Owned P4 restored to baseline 2419200" "2419200" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case 11.2: BASELINE_VALID set to 1 for restoration" "1" "$BASELINE_VALID"
+assert_eq "Case 11.2: THERMAL_AUTHORIZED remains 0 after restoration" "0" "$THERMAL_AUTHORIZED"
+
+# Test 3: Invoke actual apply_adaptive_thermal() after restoration -> zero sysfs writes
+p119_apply_rc=0
+apply_adaptive_thermal || p119_apply_rc=$?
+assert_eq "Case 11.3: apply_adaptive_thermal performs zero sysfs writes (P4 remains 2419200)" "2419200" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case 11.3: THERMAL_AUTHORIZED stays 0" "0" "$THERMAL_AUTHORIZED"
+assert_eq "Case 11.3: CURRENT_TIER remains 0" "0" "$CURRENT_TIER"
+
+# Test 4: Valid baseline + missing guard at startup -> validate_baseline_integrity does NOT authorize thermal
+BASELINE_VALID=0
+THERMAL_AUTHORIZED=0
+rm -f "$GUARD_FILE"
+p119_val_rc=0
+validate_baseline_integrity || p119_val_rc=$?
+assert_eq "Case 11.4: validate_baseline_integrity returns 0 for valid baseline" "0" "$p119_val_rc"
+assert_eq "Case 11.4: THERMAL_AUTHORIZED remains 0 without guard" "0" "$THERMAL_AUTHORIZED"
+apply_adaptive_thermal || true
+assert_eq "Case 11.4: apply_adaptive_thermal performs zero sysfs writes when guard missing" "2419200" "$(cat "$CPU_P4_MAX")"
+
+# Test 5: Remove guard after successful startup -> next thermal application rejected without sysfs writes
+rm -f "$GUARD_FILE" "$OWNERSHIP_FILE"
+CURRENT_TIER=0; RECOVERY_PENDING=0
+APPLIED_P0="NONE"; APPLIED_P4="NONE"; APPLIED_P7="NONE"; APPLIED_GPU="NONE"
+p119_init_rc=0
+capture_baseline_frequencies || p119_init_rc=$?
+assert_eq "Case 11.5: Startup capture succeeds cleanly" "0" "$p119_init_rc"
+assert_eq "Case 11.5: THERMAL_AUTHORIZED is 1 after startup" "1" "$THERMAL_AUTHORIZED"
+assert_eq "Case 11.5: Boot guard exists after startup" "1" "$([ -f "$GUARD_FILE" ] && echo 1 || echo 0)"
+
+# Remove guard during runtime and capture log in mock log file
+P119_GUARD_LOG="$TEST_DIR/p119_guard.log"
+: > "$P119_GUARD_LOG"
+log() { echo "[${2:-INFO}] $1" >> "$P119_GUARD_LOG"; }
+rm -f "$GUARD_FILE"
+apply_adaptive_thermal || true
+assert_eq "Case 11.5: THERMAL_AUTHORIZED invalidated to 0 when guard disappears" "0" "$THERMAL_AUTHORIZED"
+assert_eq "Case 11.5: Zero sysfs writes after guard disappears (P4 remains 2419200)" "2419200" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case 11.5: Explicit boot-guard validation failure logged" "1" "$(grep -q "boot-guard validation failed" "$P119_GUARD_LOG" && echo 1 || echo 0)"
+
+# Test 6: Successful baseline and guard initialization -> thermal authorization works normally
+rm -f "$GUARD_FILE" "$OWNERSHIP_FILE"
+CURRENT_TIER=0; RECOVERY_PENDING=0
+APPLIED_P0="NONE"; APPLIED_P4="NONE"; APPLIED_P7="NONE"; APPLIED_GPU="NONE"
+p119_ok_rc=0
+capture_baseline_frequencies || p119_ok_rc=$?
+assert_eq "Case 11.6: Normal capture returns 0" "0" "$p119_ok_rc"
+assert_eq "Case 11.6: THERMAL_AUTHORIZED=1 on normal startup" "1" "$THERMAL_AUTHORIZED"
+assert_eq "Case 11.6: BASELINE_VALID=1 on normal startup" "1" "$BASELINE_VALID"
+apply_adaptive_thermal || true
+assert_eq "Case 11.6: Tier 4 thermal limit applied to P4 at 45C (1401600)" "1401600" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case 11.6: CURRENT_TIER updated to 4" "4" "$CURRENT_TIER"
+
+# Test 7: Lifecycle Scenario A/B remains functional while thermal is unauthorized
+THERMAL_AUTHORIZED=0
+MOCK_USER_LIST="UserInfo{0:Main User:413} id=0 name=Main User type=android.os.usertype.full.SYSTEM flags=ADMIN|PRIMARY (running) (current)
+UserInfo{10:Delia:10} id=10 name=Delia type=android.os.usertype.full.SECONDARY flags=0 (running)"
+reset_mock_calls
+MOCK_STOPPED_STATE="false"
+MOCK_STARTED_STATE="RUNNING_UNLOCKED"
+MOCK_CURRENT_USER=0
+MOCK_DISP_OFF=1
+p119_lc_res=$(execute_scenario_b_user_stop 10 5)
+assert_eq "Case 11.7: Scenario B user stop succeeds while THERMAL_AUTHORIZED=0" "STOP_SUCCESS" "$p119_lc_res"
+assert_eq "Case 11.7: Target user 10 stop requested once" "1" "$(get_mock_stop_calls)"
+
+# Test 8: Restoration with missing baseline still preserves Phase 11.7 fail-closed behavior
+rm -f "$BASELINE_FILE"
+echo "1920000" > "$CPU_P4_MAX"
+APPLIED_P4="1920000"; STATUS_P4="APPLIED_VERIFIED"; CURRENT_TIER=2; RECOVERY_PENDING=0
+save_ownership_records
+p119_miss_rc=0
+restore_hardware_baseline "P119_MISSING_BASELINE" || p119_miss_rc=$?
+assert_eq "Case 11.8: Restoration with missing baseline returns nonzero" "1" "$p119_miss_rc"
+assert_eq "Case 11.8: Zero sysfs writes when baseline missing (P4 remains 1920000)" "1920000" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case 11.8: RECOVERY_PENDING set to 1" "1" "$RECOVERY_PENDING"
+
+# Test 9: Cleanup with missing guard but valid baseline reports actual restoration outcome accurately
+cat <<EOF > "$BASELINE_FILE"
+BOOT_ID="$P119_BOOT_ID"
+BASE_P0="1785600"
+BASE_P4="2419200"
+BASE_P7="2841600"
+BASE_GPU="675000000"
+EOF
+cat <<EOF > "$OWNERSHIP_FILE"
+BOOT_ID="$P119_BOOT_ID"
+RECOVERY_PENDING="0"
+CURRENT_TIER="2"
+APPLIED_P0="NONE"
+READBACK_P0="NONE"
+STATUS_P0="BASELINE"
+APPLIED_P4="1920000"
+READBACK_P4="1920000"
+STATUS_P4="APPLIED_VERIFIED"
+APPLIED_P7="NONE"
+READBACK_P7="NONE"
+STATUS_P7="BASELINE"
+APPLIED_GPU="NONE"
+READBACK_GPU="NONE"
+STATUS_GPU="BASELINE"
+EOF
+rm -f "$GUARD_FILE"
+echo "1785600" > "$CPU_P0_MAX"
+echo "1920000" > "$CPU_P4_MAX"
+echo "2841600" > "$CPU_P7_MAX"
+echo "675000000" > "$GPU_MAX_CLK"
+P119_PID_FILE="$TEST_DIR/p119_cleanup.pid"
+P119_LOG_FILE="$TEST_DIR/p119_cleanup.log"
+: > "$P119_LOG_FILE"
+echo "99999" > "$P119_PID_FILE"
+(
+  PID_FILE="$P119_PID_FILE"
+  LOG_FILE="$P119_LOG_FILE"
+  log() { echo "[${2:-INFO}] $1" >> "$P119_LOG_FILE"; }
+  THERMAL_AUTHORIZED=0
+  BASELINE_VALID=0
+  IN_MEMORY_BOOT_ID="$P119_BOOT_ID"
+  CURRENT_TIER=2
+  RECOVERY_PENDING=0
+  APPLIED_P4="1920000"
+  STATUS_P4="APPLIED_VERIFIED"
+  . "$SCRIPT_DIR/lib/daemon_cleanup.sh"
+  production_cleanup_on_exit
+)
+assert_eq "Case 11.9: Cleanup restored owned P4 to 2419200 even with missing guard" "2419200" "$(cat "$CPU_P4_MAX")"
+assert_eq "Case 11.9: Cleanup unlinked PID file" "1" "$([ ! -f "$P119_PID_FILE" ] && echo 1 || echo 0)"
+assert_eq "Case 11.9: Cleanup logged CLEANUP_SUCCESS" "1" "$(grep -q "CLEANUP_SUCCESS" "$P119_LOG_FILE" && echo 1 || echo 0)"
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Test Summary: PASSED=$PASSED, FAILED=$FAILED"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

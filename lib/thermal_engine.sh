@@ -27,6 +27,7 @@ THERMAL_ZONE_TYPE=""
 CURRENT_TIER=0
 RECOVERY_PENDING=0
 BASELINE_VALID=0
+THERMAL_AUTHORIZED=0
 
 BASE_P0=""
 BASE_P4=""
@@ -297,17 +298,41 @@ validate_baseline_integrity() {
     fi
   fi
 
+  BASELINE_VALID=0
   return 1
+}
+
+# ── Adaptive Thermal Authorization Check (Baseline Integrity + Current-Boot Guard) ──
+validate_thermal_authorization() {
+  if [ "${THERMAL_AUTHORIZED:-0}" -ne 1 ]; then
+    return 1
+  fi
+  if [ "${BASELINE_VALID:-0}" -ne 1 ] || ! validate_baseline_integrity; then
+    BASELINE_VALID=0
+    THERMAL_AUTHORIZED=0
+    return 1
+  fi
+  local cur_boot
+  cur_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
+  if ! is_same_boot_guard_active "$cur_boot"; then
+    THERMAL_AUTHORIZED=0
+    command -v log >/dev/null 2>&1 && log "ERROR: Adaptive thermal boot-guard validation failed for boot $cur_boot ($GUARD_FILE missing or mismatched); invalidating thermal authorization." "ERROR"
+    return 1
+  fi
+  return 0
 }
 
 # ── Runtime Baseline Capture (Per-Boot Identity & Fail-Closed Guards) ──
 capture_baseline_frequencies() {
   local current_boot_id stored_boot_id
+  BASELINE_VALID=0
+  THERMAL_AUTHORIZED=0
   current_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
 
   if [ -z "$current_boot_id" ] || [ "$current_boot_id" = "unknown_boot" ]; then
     command -v log >/dev/null 2>&1 && log "ERROR: Invalid boot ID; baseline capture aborted." "ERROR"
     BASELINE_VALID=0
+    THERMAL_AUTHORIZED=0
     return 1
   fi
 
@@ -352,18 +377,21 @@ capture_baseline_frequencies() {
         BASE_P4="$f_p4"
         BASE_P7="$f_p7"
         BASE_GPU="$f_gpu"
-        if write_boot_guard "$current_boot_id"; then
+        if write_boot_guard "$current_boot_id" && is_same_boot_guard_active "$current_boot_id"; then
           BASELINE_VALID=1
+          THERMAL_AUTHORIZED=1
           command -v log >/dev/null 2>&1 && log "Loaded and verified valid baseline for boot $current_boot_id: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU" "INFO"
           return 0
         else
           BASELINE_VALID=0
+          THERMAL_AUTHORIZED=0
           command -v log >/dev/null 2>&1 && log "ERROR: Failed to persist boot guard for verified existing baseline ($current_boot_id); adaptive thermal disabled for safety." "ERROR"
           return 1
         fi
       else
         command -v log >/dev/null 2>&1 && log "ERROR: Same-boot baseline file $BASELINE_FILE contains invalid frequencies (P0='$f_p0', P4='$f_p4', P7='$f_p7', GPU='$f_gpu'). Rejecting without silent overwrite." "ERROR"
         BASELINE_VALID=0
+        THERMAL_AUTHORIZED=0
         return 1
       fi
     else
@@ -458,14 +486,16 @@ EOF
   fi
 
   # 5. Atomic write of boot guard file
-  if ! write_boot_guard "$current_boot_id"; then
+  if ! write_boot_guard "$current_boot_id" || ! is_same_boot_guard_active "$current_boot_id"; then
     command -v log >/dev/null 2>&1 && log "ERROR: Failed to write boot guard file $GUARD_FILE. Purging baseline for consistency." "ERROR"
     rm -f "$BASELINE_FILE" 2>/dev/null
     BASELINE_VALID=0
+    THERMAL_AUTHORIZED=0
     return 1
   fi
 
   BASELINE_VALID=1
+  THERMAL_AUTHORIZED=1
   command -v log >/dev/null 2>&1 && log "Runtime baseline captured: P0=$BASE_P0, P4=$BASE_P4, P7=$BASE_P7, GPU=$BASE_GPU (boot: $current_boot_id)" "INFO"
   return 0
 }
