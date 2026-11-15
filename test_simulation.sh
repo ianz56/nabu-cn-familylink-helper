@@ -1604,6 +1604,85 @@ assert_eq "Case 11.9: Cleanup unlinked PID file" "1" "$([ ! -f "$P119_PID_FILE" 
 assert_eq "Case 11.9: Cleanup logged CLEANUP_SUCCESS" "1" "$(grep -q "CLEANUP_SUCCESS" "$P119_LOG_FILE" && echo 1 || echo 0)"
 
 echo ""
+echo "── 12. Phase 14: Concurrent Startup & Daemon Singleton Lock Tests ──"
+
+P14_MODDIR="$TEST_DIR/p14_mod"
+P14_BIN="$TEST_DIR/p14_bin"
+mkdir -p "$P14_MODDIR/lib" "$P14_BIN"
+
+cat <<'EOF' > "$P14_BIN/getprop"
+#!/bin/sh
+if [ "$1" = "sys.boot_completed" ]; then echo "1"; fi
+EOF
+cat <<'EOF' > "$P14_BIN/cmd"
+#!/bin/sh
+echo "Set to true"
+EOF
+cat <<'EOF' > "$P14_BIN/dumpsys"
+#!/bin/sh
+echo "mStopUserOnSwitch:1"
+EOF
+chmod +x "$P14_BIN/getprop" "$P14_BIN/cmd" "$P14_BIN/dumpsys"
+
+cp "$SCRIPT_DIR/service.sh" "$P14_MODDIR/service.sh"
+chmod +x "$P14_MODDIR/service.sh"
+
+# Build a lightweight mock auto_switch.sh that uses the exact production acquire_daemon_lock()
+cat <<'EOF' > "$P14_MODDIR/auto_switch.sh"
+#!/bin/sh
+set -u
+MODDIR="${0%/*}"
+LOG_FILE="$MODDIR/auto_switch.log"
+PID_FILE="$MODDIR/auto_switch.pid"
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [${2:-INFO}] $1" >> "$LOG_FILE"; }
+EOF
+sed -n '/^DAEMON_LOCK_FILE=/,/^setup_daemon_signals$/p' "$SCRIPT_DIR/auto_switch.sh" | grep -v '^setup_daemon_signals$' >> "$P14_MODDIR/auto_switch.sh"
+cat <<'EOF' >> "$P14_MODDIR/auto_switch.sh"
+trap 'rm -f "$PID_FILE" 2>/dev/null || true; exit 0' INT TERM EXIT
+while true; do sleep 1; done
+EOF
+chmod +x "$P14_MODDIR/auto_switch.sh"
+
+# Test 12.1: Concurrent service.sh invocations must yield exactly 1 daemon
+(
+  PATH="$P14_BIN:$PATH"
+  sh "$P14_MODDIR/service.sh" &
+  p1=$!
+  sh "$P14_MODDIR/service.sh" &
+  p2=$!
+  wait "$p1" "$p2"
+)
+sleep 1
+p14_cnt1=$(ps -eo pid,args | grep "$P14_MODDIR/auto_switch.sh" | grep -v grep | wc -l | tr -d ' ')
+p14_pid1=$(cat "$P14_MODDIR/auto_switch.pid" 2>/dev/null || echo "")
+assert_eq "Case 12.1: Concurrent service.sh leaves exactly 1 daemon" "1" "$p14_cnt1"
+assert_eq "Case 12.1: Second service.sh logged clean lock skip" "1" "$(grep -q "Another service.sh startup instance is already active" "$P14_MODDIR/service.log" && echo 1 || echo 0)"
+assert_eq "Case 12.1: PID file points to live daemon" "1" "$([ -n "$p14_pid1" ] && [ -d "/proc/$p14_pid1" ] && echo 1 || echo 0)"
+
+# Test 12.2: Direct duplicate auto_switch.sh invocation exits cleanly without altering PID file
+PATH="$P14_BIN:$PATH" sh "$P14_MODDIR/auto_switch.sh"
+p14_cnt2=$(ps -eo pid,args | grep "$P14_MODDIR/auto_switch.sh" | grep -v grep | wc -l | tr -d ' ')
+p14_pid2=$(cat "$P14_MODDIR/auto_switch.pid" 2>/dev/null || echo "")
+assert_eq "Case 12.2: Direct duplicate auto_switch.sh leaves exactly 1 daemon" "1" "$p14_cnt2"
+assert_eq "Case 12.2: Original PID file preserved" "$p14_pid1" "$p14_pid2"
+assert_eq "Case 12.2: Duplicate auto_switch.sh logged warning" "1" "$(grep -q "Duplicate auto_switch.sh instance detected" "$P14_MODDIR/auto_switch.log" && echo 1 || echo 0)"
+
+# Test 12.3: Late service.sh invocation replaces old daemon cleanly with 1 new daemon
+PATH="$P14_BIN:$PATH" sh "$P14_MODDIR/service.sh"
+sleep 1
+p14_cnt3=$(ps -eo pid,args | grep "$P14_MODDIR/auto_switch.sh" | grep -v grep | wc -l | tr -d ' ')
+p14_pid3=$(cat "$P14_MODDIR/auto_switch.pid" 2>/dev/null || echo "")
+assert_eq "Case 12.3: Late service.sh leaves exactly 1 daemon" "1" "$p14_cnt3"
+assert_eq "Case 12.3: Old daemon was replaced by new PID" "1" "$([ -n "$p14_pid3" ] && [ "$p14_pid3" != "$p14_pid1" ] && [ -d "/proc/$p14_pid3" ] && echo 1 || echo 0)"
+assert_eq "Case 12.3: Old daemon PID no longer alive" "0" "$([ -d "/proc/$p14_pid1" ] && echo 1 || echo 0)"
+
+# Cleanup mock daemon
+if [ -n "$p14_pid3" ] && [ -d "/proc/$p14_pid3" ]; then
+  kill -TERM "$p14_pid3" 2>/dev/null || true
+  sleep 1
+fi
+
+echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Test Summary: PASSED=$PASSED, FAILED=$FAILED"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

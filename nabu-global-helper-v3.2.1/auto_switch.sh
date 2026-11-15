@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Nabu DerpFest 17 Helper — Dynamic Multi-User & Adaptive Thermal Daemon (v3.2.0)
+# Nabu DerpFest 17 Helper — Dynamic Multi-User & Adaptive Thermal Daemon (v3.2.1)
 # ==============================================================================
 # Dynamic multi-user lifecycle management with fail-closed eligibility validation,
 # native stop-on-switch synergy, and Adaptive Thermal Tier 0-4 with hysteresis.
@@ -69,6 +69,47 @@ else
 fi
 
 # ── Singleton Process Management & Trap Registration ──
+DAEMON_LOCK_FILE="${DAEMON_LOCK_FILE:-$MODDIR/.daemon.lock}"
+DAEMON_LOCK_DIR="${DAEMON_LOCK_DIR:-$MODDIR/.daemon.lock.d}"
+
+acquire_daemon_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 8>"$DAEMON_LOCK_FILE" 2>/dev/null || return 1
+    if ! flock -n 8 2>/dev/null; then
+      exec 8>&- 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+
+  if mkdir "$DAEMON_LOCK_DIR" 2>/dev/null; then
+    echo "$$" > "$DAEMON_LOCK_DIR/pid" 2>/dev/null || true
+    return 0
+  fi
+
+  local lock_pid
+  lock_pid=$(cat "$DAEMON_LOCK_DIR/pid" 2>/dev/null || echo "")
+  case "$lock_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ -d "/proc/$lock_pid" ]; then
+        return 1
+      fi
+      ;;
+  esac
+  rm -rf "$DAEMON_LOCK_DIR" 2>/dev/null || true
+  if mkdir "$DAEMON_LOCK_DIR" 2>/dev/null; then
+    echo "$$" > "$DAEMON_LOCK_DIR/pid" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+if ! acquire_daemon_lock; then
+  log "Duplicate auto_switch.sh instance detected (PID=$$); exiting cleanly without disturbing active daemon." "WARN"
+  exit 0
+fi
+
 MY_PID="$$"
 echo "$MY_PID" > "$PID_FILE" 2>/dev/null || true
 setup_daemon_signals
@@ -155,7 +196,7 @@ apply_adaptive_thermal() {
 }
 
 # ── Daemon Initialization ──
-log "Auto-switch daemon started (version=v3.2.0, timeout=${TIMEOUT}s, target=DYNAMIC_MULTI_USER, LIVE_EXECUTION=ENABLED)" "INFO"
+log "Auto-switch daemon started (version=v3.2.1, timeout=${TIMEOUT}s, target=DYNAMIC_MULTI_USER, LIVE_EXECUTION=ENABLED)" "INFO"
 
 find_thermal_sensor
 if capture_baseline_frequencies; then

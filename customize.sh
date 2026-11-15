@@ -1,10 +1,10 @@
 #!/system/bin/sh
-# Nabu DerpFest 17 Helper — Module Installer Script (v3.2.0)
+# Nabu DerpFest 17 Helper — Module Installer Script (v3.2.1)
 # ==========================================================
 # Strict pre-installation environment and hardware assertion checks.
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "  Nabu DerpFest 17 Helper v3.2.0"
+ui_print "  Nabu DerpFest 17 Helper v3.2.1"
 ui_print "  Pre-Installation Safety Verification"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print ""

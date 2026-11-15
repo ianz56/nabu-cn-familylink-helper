@@ -1,12 +1,12 @@
 #!/system/bin/sh
-# Nabu DerpFest 17 Helper — KernelSU Action Diagnostic Script (v3.2.0)
+# Nabu DerpFest 17 Helper — KernelSU Action Diagnostic Script (v3.2.1)
 # ===================================================================
 # STRICTLY NON-DESTRUCTIVE DIAGNOSTIC TOOL.
 # Displays dynamic multi-user discovery, native switch policy, display telemetry,
 # and adaptive thermal hardware status without executing user lifecycle commands.
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Nabu DerpFest 17 Helper v3.2.0 — System Diagnostic"
+echo "  Nabu DerpFest 17 Helper v3.2.1 — System Diagnostic"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  [SAFETY POLICY] Action Button operates in DIAGNOSTIC mode only."

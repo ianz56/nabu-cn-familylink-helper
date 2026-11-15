@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Nabu DerpFest 17 Helper — Late-Start Service (v3.2.0)
+# Nabu DerpFest 17 Helper — Late-Start Service (v3.2.1)
 # =====================================================
 # Executes on boot completion under KernelSU late-start service trigger.
 # Enforces strict daemon process identity verification, bounded graceful shutdown,
@@ -9,6 +9,8 @@ MODDIR="${0%/*}"
 LOG_FILE="$MODDIR/service.log"
 PID_FILE="$MODDIR/auto_switch.pid"
 DAEMON_SCRIPT="$MODDIR/auto_switch.sh"
+SERVICE_LOCK_FILE="$MODDIR/.service.lock"
+SERVICE_LOCK_DIR="$MODDIR/.service.lock.d"
 GRACEFUL_SHUTDOWN_TIMEOUT=5
 
 log() {
@@ -23,8 +25,49 @@ log_err() {
   echo "$timestamp [ERROR] $1" >> "$LOG_FILE"
 }
 
+# 0. Serialize concurrent service.sh invocations (e.g., duplicate KernelSU boot triggers)
+acquire_service_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$SERVICE_LOCK_FILE" 2>/dev/null || return 1
+    if ! flock -n 9 2>/dev/null; then
+      exec 9>&- 2>/dev/null || true
+      return 1
+    fi
+    return 0
+  fi
+
+  if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
+    echo "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+    trap 'rm -rf "$SERVICE_LOCK_DIR" 2>/dev/null || true' EXIT
+    return 0
+  fi
+
+  local lock_pid
+  lock_pid=$(cat "$SERVICE_LOCK_DIR/pid" 2>/dev/null || echo "")
+  case "$lock_pid" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ -d "/proc/$lock_pid" ]; then
+        return 1
+      fi
+      ;;
+  esac
+  rm -rf "$SERVICE_LOCK_DIR" 2>/dev/null || true
+  if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
+    echo "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+    trap 'rm -rf "$SERVICE_LOCK_DIR" 2>/dev/null || true' EXIT
+    return 0
+  fi
+  return 1
+}
+
+if ! acquire_service_lock; then
+  log "Another service.sh startup instance is already active; exiting cleanly to prevent duplicate daemon launch."
+  exit 0
+fi
+
 # 1. Wait for Android Boot Completion
-log "Nabu DerpFest Helper service started (version=v3.2.0), waiting for boot_completed..."
+log "Nabu DerpFest Helper service started (version=v3.2.1), waiting for boot_completed..."
 BOOT_WAIT=0
 while [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
   sleep 2
@@ -126,8 +169,20 @@ fi
 # 4. Launch Auto-Switch & Thermal Daemon
 if [ -f "$DAEMON_SCRIPT" ]; then
   chmod 0755 "$DAEMON_SCRIPT"
-  nohup sh "$DAEMON_SCRIPT" >> "$LOG_FILE" 2>&1 &
+  nohup sh "$DAEMON_SCRIPT" >> "$LOG_FILE" 2>&1 9>&- &
   NEW_PID=$!
+  # Wait briefly for daemon to acquire its lock and publish PID_FILE before releasing service lock
+  pid_wait=0
+  while [ "$pid_wait" -lt 3 ]; do
+    if [ -s "$PID_FILE" ] && [ "$(cat "$PID_FILE" 2>/dev/null)" = "$NEW_PID" ]; then
+      break
+    fi
+    if [ ! -d "/proc/$NEW_PID" ]; then
+      break
+    fi
+    sleep 1
+    pid_wait=$((pid_wait + 1))
+  done
   log "Auto-switch & thermal daemon launched (PID: $NEW_PID)"
 else
   log_err "CRITICAL: Daemon script not found at $DAEMON_SCRIPT"

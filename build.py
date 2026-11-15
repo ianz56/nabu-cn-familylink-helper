@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Canonical Build Script for Nabu DerpFest 17 Helper v3.2.0.
+"""Canonical Build Script for Nabu DerpFest 17 Helper v3.2.1.
 
 Packages module files strictly from the Canonical Distribution Source:
-  /home/ianperd/Project/kill-users-nabu/nabu-global-helper-v3.2.0
+  /home/ianperd/Project/kill-users-nabu/nabu-global-helper-v3.2.1
 
 Produces deterministic Magisk/KernelSU ZIP packages:
-  - nabu-derpfest-helper-v3.2.0.zip
+  - nabu-derpfest-helper-v3.2.1.zip
 Converts CRLF to LF for shell scripts.
 Computes SHA-256 hashes for all packaged files.
 """
@@ -17,10 +17,10 @@ import sys
 import zipfile
 
 MODULE_NAME = "nabu-derpfest-helper"
-VERSION = "v3.2.0"
+VERSION = "v3.2.1"
 
 WORKSPACE_ROOT = "/home/ianperd/Project/kill-users-nabu"
-CANONICAL_SOURCE_DIR = os.path.join(WORKSPACE_ROOT, "nabu-global-helper-v3.2.0")
+CANONICAL_SOURCE_DIR = os.path.join(WORKSPACE_ROOT, "nabu-global-helper-v3.2.1")
 
 SHELL_EXTENSIONS = {".sh"}
 
