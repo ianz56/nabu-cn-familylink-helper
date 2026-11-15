@@ -57,9 +57,16 @@ production_cleanup_on_exit() {
     fi
   fi
 
-  # 4. Unlink PID file ONLY after restoration finishes
+  # 4. Unlink PID file and owned daemon lock ONLY after restoration finishes
   if [ -n "$PID_FILE" ] && [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE" 2>/dev/null || true
+  fi
+  if [ -n "${DAEMON_LOCK_DIR:-}" ] && [ -d "$DAEMON_LOCK_DIR" ]; then
+    local lock_owner
+    lock_owner=$(cat "$DAEMON_LOCK_DIR/owner" 2>/dev/null || echo "")
+    case "$lock_owner" in
+      "$$|"*) rm -rf "$DAEMON_LOCK_DIR" 2>/dev/null || true ;;
+    esac
   fi
 
   exit 0

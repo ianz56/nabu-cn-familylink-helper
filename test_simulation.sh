@@ -1636,7 +1636,7 @@ LOG_FILE="$MODDIR/auto_switch.log"
 PID_FILE="$MODDIR/auto_switch.pid"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [${2:-INFO}] $1" >> "$LOG_FILE"; }
 EOF
-sed -n '/^DAEMON_LOCK_FILE=/,/^setup_daemon_signals$/p' "$SCRIPT_DIR/auto_switch.sh" | grep -v '^setup_daemon_signals$' >> "$P14_MODDIR/auto_switch.sh"
+sed -n '/^DAEMON_LOCK_DIR=/,/^setup_daemon_signals$/p' "$SCRIPT_DIR/auto_switch.sh" | grep -v '^setup_daemon_signals$' >> "$P14_MODDIR/auto_switch.sh"
 cat <<'EOF' >> "$P14_MODDIR/auto_switch.sh"
 trap 'rm -f "$PID_FILE" 2>/dev/null || true; exit 0' INT TERM EXIT
 while true; do sleep 1; done

@@ -69,37 +69,41 @@ else
 fi
 
 # ── Singleton Process Management & Trap Registration ──
-DAEMON_LOCK_FILE="${DAEMON_LOCK_FILE:-$MODDIR/.daemon.lock}"
+# Uses atomic POSIX mkdir + PID|BOOT_ID + cmdline validation (avoids mksh CLOEXEC issues with flock FDs)
 DAEMON_LOCK_DIR="${DAEMON_LOCK_DIR:-$MODDIR/.daemon.lock.d}"
 
 acquire_daemon_lock() {
-  if command -v flock >/dev/null 2>&1; then
-    exec 8>"$DAEMON_LOCK_FILE" 2>/dev/null || return 1
-    if ! flock -n 8 2>/dev/null; then
-      exec 8>&- 2>/dev/null || true
-      return 1
-    fi
-    return 0
-  fi
+  local cur_boot
+  cur_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
 
   if mkdir "$DAEMON_LOCK_DIR" 2>/dev/null; then
-    echo "$$" > "$DAEMON_LOCK_DIR/pid" 2>/dev/null || true
+    printf '%s|%s\n' "$$" "$cur_boot" > "$DAEMON_LOCK_DIR/owner" 2>/dev/null || true
     return 0
   fi
 
-  local lock_pid
-  lock_pid=$(cat "$DAEMON_LOCK_DIR/pid" 2>/dev/null || echo "")
-  case "$lock_pid" in
-    ''|*[!0-9]*) ;;
-    *)
-      if [ -d "/proc/$lock_pid" ]; then
-        return 1
-      fi
-      ;;
-  esac
+  local owner_info lock_pid lock_boot lock_cmd
+  owner_info=$(cat "$DAEMON_LOCK_DIR/owner" 2>/dev/null || echo "")
+  lock_pid="${owner_info%%|*}"
+  lock_boot="${owner_info#*|}"
+
+  if [ -n "$lock_pid" ] && [ "$lock_boot" = "$cur_boot" ]; then
+    case "$lock_pid" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ -d "/proc/$lock_pid" ]; then
+          lock_cmd=$(tr '\0' ' ' < "/proc/$lock_pid/cmdline" 2>/dev/null || echo "")
+          case "$lock_cmd" in
+            *auto_switch.sh*) return 1 ;;
+          esac
+        fi
+        ;;
+    esac
+  fi
+
+  # Stale lock from dead process, PID reuse, or prior boot
   rm -rf "$DAEMON_LOCK_DIR" 2>/dev/null || true
   if mkdir "$DAEMON_LOCK_DIR" 2>/dev/null; then
-    echo "$$" > "$DAEMON_LOCK_DIR/pid" 2>/dev/null || true
+    printf '%s|%s\n' "$$" "$cur_boot" > "$DAEMON_LOCK_DIR/owner" 2>/dev/null || true
     return 0
   fi
   return 1

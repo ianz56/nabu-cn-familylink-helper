@@ -26,35 +26,37 @@ log_err() {
 }
 
 # 0. Serialize concurrent service.sh invocations (e.g., duplicate KernelSU boot triggers)
+# Uses atomic POSIX mkdir + PID|BOOT_ID validation (avoids mksh CLOEXEC issues with flock FDs)
 acquire_service_lock() {
-  if command -v flock >/dev/null 2>&1; then
-    exec 9>"$SERVICE_LOCK_FILE" 2>/dev/null || return 1
-    if ! flock -n 9 2>/dev/null; then
-      exec 9>&- 2>/dev/null || true
-      return 1
-    fi
-    return 0
-  fi
+  local cur_boot
+  cur_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown_boot")
 
   if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
-    echo "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+    printf '%s|%s\n' "$$" "$cur_boot" > "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
     trap 'rm -rf "$SERVICE_LOCK_DIR" 2>/dev/null || true' EXIT
     return 0
   fi
 
-  local lock_pid
-  lock_pid=$(cat "$SERVICE_LOCK_DIR/pid" 2>/dev/null || echo "")
-  case "$lock_pid" in
-    ''|*[!0-9]*) ;;
-    *)
-      if [ -d "/proc/$lock_pid" ]; then
-        return 1
-      fi
-      ;;
-  esac
+  local owner_info lock_pid lock_boot
+  owner_info=$(cat "$SERVICE_LOCK_DIR/owner" 2>/dev/null || echo "")
+  lock_pid="${owner_info%%|*}"
+  lock_boot="${owner_info#*|}"
+
+  if [ -n "$lock_pid" ] && [ "$lock_boot" = "$cur_boot" ]; then
+    case "$lock_pid" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ -d "/proc/$lock_pid" ]; then
+          return 1
+        fi
+        ;;
+    esac
+  fi
+
+  # Stale lock from dead process or prior boot
   rm -rf "$SERVICE_LOCK_DIR" 2>/dev/null || true
   if mkdir "$SERVICE_LOCK_DIR" 2>/dev/null; then
-    echo "$$" > "$SERVICE_LOCK_DIR/pid" 2>/dev/null || true
+    printf '%s|%s\n' "$$" "$cur_boot" > "$SERVICE_LOCK_DIR/owner" 2>/dev/null || true
     trap 'rm -rf "$SERVICE_LOCK_DIR" 2>/dev/null || true' EXIT
     return 0
   fi
@@ -169,7 +171,7 @@ fi
 # 4. Launch Auto-Switch & Thermal Daemon
 if [ -f "$DAEMON_SCRIPT" ]; then
   chmod 0755 "$DAEMON_SCRIPT"
-  nohup sh "$DAEMON_SCRIPT" >> "$LOG_FILE" 2>&1 9>&- &
+  nohup sh "$DAEMON_SCRIPT" >> "$LOG_FILE" 2>&1 &
   NEW_PID=$!
   # Wait briefly for daemon to acquire its lock and publish PID_FILE before releasing service lock
   pid_wait=0
