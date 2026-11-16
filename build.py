@@ -17,14 +17,14 @@ import sys
 import zipfile
 
 MODULE_NAME = "nabu-derpfest-helper"
-VERSION = "v3.2.1"
+VERSION = "v3.2.2"
 
 WORKSPACE_ROOT = "/home/ianperd/Project/kill-users-nabu"
-CANONICAL_SOURCE_DIR = os.path.join(WORKSPACE_ROOT, "nabu-global-helper-v3.2.1")
+CANONICAL_SOURCE_DIR = WORKSPACE_ROOT
 
 SHELL_EXTENSIONS = {".sh"}
 
-# Strictly the 11 production release files
+# Strictly the 13 production release files
 PRODUCTION_FILES = [
     "module.prop",
     "service.sh",
@@ -35,6 +35,8 @@ PRODUCTION_FILES = [
     os.path.join("lib", "thermal_engine.sh"),
     os.path.join("lib", "lifecycle_engine.sh"),
     os.path.join("lib", "daemon_cleanup.sh"),
+    os.path.join("system", "product", "priv-app", "Supervision", "Supervision.apk"),
+    os.path.join("system", "product", "priv-app", "Supervision", "split_config.xhdpi.apk"),
     os.path.join("META-INF", "com", "google", "android", "update-binary"),
     os.path.join("META-INF", "com", "google", "android", "updater-script"),
 ]
@@ -113,8 +115,9 @@ def main():
             add_file(zf, local_path, archive_path)
             included_files.append((archive_path, local_path))
 
-    shutil.copy2(output_zip_canonical, output_zip_root)
-    print(f"\nSynchronized release ZIP to workspace root: {output_zip_root}")
+    if os.path.abspath(output_zip_canonical) != os.path.abspath(output_zip_root):
+        shutil.copy2(output_zip_canonical, output_zip_root)
+        print(f"\nSynchronized release ZIP to workspace root: {output_zip_root}")
 
     canonical_size = os.path.getsize(output_zip_canonical)
     canonical_sha = sha256_file(output_zip_canonical)

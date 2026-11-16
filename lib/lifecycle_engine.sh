@@ -113,14 +113,13 @@ is_display_off() {
   sf_dump=$(dumpsys SurfaceFlinger 2>/dev/null)
   [ -z "$sf_dump" ] && return 1
 
-  sf_state=$(echo "$sf_dump" | awk '/Display [0-9]+ \(built-in\):/ {
-    while (getline line) {
-      if (line ~ /powerMode:/) {
-        if (line ~ /powerMode: OFF|powerMode: 0/) { print "OFF"; exit }
-        else { print "ON"; exit }
-      }
+  sf_state=$(echo "$sf_dump" | awk '
+    /Display [0-9]+ \(built-in\):|^Display [0-9]+$/ { in_disp=1; next }
+    in_disp && /powerMode[:=]/ {
+      if ($0 ~ /powerMode[:=][[:space:]]*(OFF|Off|0)([^0-9a-zA-Z]|$)/) { print "OFF"; exit }
+      else { print "ON"; exit }
     }
-  }')
+  ')
   [ "$sf_state" != "OFF" ] && return 1
 
   return 0

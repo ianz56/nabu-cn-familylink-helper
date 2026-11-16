@@ -1,12 +1,12 @@
 #!/system/bin/sh
-# Nabu DerpFest 17 Helper — KernelSU Action Diagnostic Script (v3.2.1)
+# Nabu DerpFest 17 Helper — KernelSU Action Diagnostic Script (v3.2.2)
 # ===================================================================
 # STRICTLY NON-DESTRUCTIVE DIAGNOSTIC TOOL.
 # Displays dynamic multi-user discovery, native switch policy, display telemetry,
 # and adaptive thermal hardware status without executing user lifecycle commands.
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Nabu DerpFest 17 Helper v3.2.1 — System Diagnostic"
+echo "  Nabu DerpFest 17 Helper v3.2.2 — System Diagnostic"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "  [SAFETY POLICY] Action Button operates in DIAGNOSTIC mode only."
@@ -82,14 +82,13 @@ echo ""
 echo "── 4. Display & Backlight Telemetry ────────────────────────"
 BL_VAL=$(cat /sys/class/backlight/panel0-backlight/brightness 2>/dev/null || echo "N/A")
 WAKE_STATE=$(dumpsys power 2>/dev/null | grep -m1 "mWakefulness=" | tr -d '[:space:]' | cut -d'=' -f2)
-SF_STATE=$(dumpsys SurfaceFlinger 2>/dev/null | awk '/Display [0-9]+ \(built-in\):/ {
-  while (getline line) {
-    if (line ~ /powerMode:/) {
-      if (line ~ /powerMode: OFF|powerMode: 0/) { print "OFF"; exit }
-      else { print "ON"; exit }
-    }
+SF_STATE=$(dumpsys SurfaceFlinger 2>/dev/null | awk '
+  /Display [0-9]+ \(built-in\):|^Display [0-9]+$/ { in_disp=1; next }
+  in_disp && /powerMode[:=]/ {
+    if ($0 ~ /powerMode[:=][[:space:]]*(OFF|Off|0)([^0-9a-zA-Z]|$)/) { print "OFF"; exit }
+    else { print "ON"; exit }
   }
-}')
+')
 
 echo "  Backlight Brightness:    $BL_VAL"
 echo "  Power Wakefulness:       ${WAKE_STATE:-UNKNOWN}"

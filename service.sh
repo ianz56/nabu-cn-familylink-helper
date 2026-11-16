@@ -69,7 +69,7 @@ if ! acquire_service_lock; then
 fi
 
 # 1. Wait for Android Boot Completion
-log "Nabu DerpFest Helper service started (version=v3.2.1), waiting for boot_completed..."
+log "Nabu DerpFest Helper service started (version=v3.2.2), waiting for boot_completed..."
 BOOT_WAIT=0
 while [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
   sleep 2

@@ -1,10 +1,10 @@
 #!/system/bin/sh
-# Nabu DerpFest 17 Helper — Module Installer Script (v3.2.1)
+# Nabu DerpFest 17 Helper — Module Installer Script (v3.2.2)
 # ==========================================================
 # Strict pre-installation environment and hardware assertion checks.
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "  Nabu DerpFest 17 Helper v3.2.1"
+ui_print "  Nabu DerpFest 17 Helper v3.2.2"
 ui_print "  Pre-Installation Safety Verification"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ui_print ""
@@ -32,7 +32,7 @@ fi
 ui_print "  [✓] Android version verified: Android 17 (SDK $SDK_VER)"
 
 # 3. File Completeness Assertion
-for req_file in "$MODPATH/service.sh" "$MODPATH/auto_switch.sh" "$MODPATH/action.sh" "$MODPATH/module.prop" "$MODPATH/lib/thermal_engine.sh" "$MODPATH/lib/lifecycle_engine.sh" "$MODPATH/lib/daemon_cleanup.sh"; do
+for req_file in "$MODPATH/service.sh" "$MODPATH/auto_switch.sh" "$MODPATH/action.sh" "$MODPATH/module.prop" "$MODPATH/lib/thermal_engine.sh" "$MODPATH/lib/lifecycle_engine.sh" "$MODPATH/lib/daemon_cleanup.sh" "$MODPATH/system/product/priv-app/Supervision/Supervision.apk" "$MODPATH/system/product/priv-app/Supervision/split_config.xhdpi.apk"; do
   if [ ! -f "$req_file" ]; then
     ui_print "  [FATAL ERROR] Missing required file: $req_file"
     abort "Module file structure incomplete."
@@ -46,6 +46,7 @@ set_perm "$MODPATH/auto_switch.sh" 0 0 0755
 set_perm "$MODPATH/action.sh" 0 0 0755
 set_perm "$MODPATH/module.prop" 0 0 0644
 set_perm_recursive "$MODPATH/lib" 0 0 0755 0644
+set_perm_recursive "$MODPATH/system" 0 0 0755 0644
 
 ui_print ""
 ui_print "  Safety Status:"

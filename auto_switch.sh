@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Nabu DerpFest 17 Helper — Dynamic Multi-User & Adaptive Thermal Daemon (v3.2.1)
+# Nabu DerpFest 17 Helper — Dynamic Multi-User & Adaptive Thermal Daemon (v3.2.2)
 # ==============================================================================
 # Dynamic multi-user lifecycle management with fail-closed eligibility validation,
 # native stop-on-switch synergy, and Adaptive Thermal Tier 0-4 with hysteresis.
@@ -200,7 +200,7 @@ apply_adaptive_thermal() {
 }
 
 # ── Daemon Initialization ──
-log "Auto-switch daemon started (version=v3.2.1, timeout=${TIMEOUT}s, target=DYNAMIC_MULTI_USER, LIVE_EXECUTION=ENABLED)" "INFO"
+log "Auto-switch daemon started (version=v3.2.2, timeout=${TIMEOUT}s, target=DYNAMIC_MULTI_USER, LIVE_EXECUTION=ENABLED)" "INFO"
 
 find_thermal_sensor
 if capture_baseline_frequencies; then
